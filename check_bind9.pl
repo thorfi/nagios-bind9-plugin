@@ -51,7 +51,7 @@ my %OPTIONS = (
     q{rndc-args}  => q{},
     q{sudo-path}  => q{},
     q{stats-path} => q{/var/cache/bind/named.stats},
-    q{stats-seek} => 4096,
+    q{stats-seek} => 20480,
     q{verbose}    => 0,
 );
 
