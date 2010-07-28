@@ -376,7 +376,7 @@ if ( $PERFDATA{'udp_soft_limit'} + $PERFDATA{'udp_hard_limit'} > 0 ) {
 if ( $PERFDATA{'tcp_hard_limit'} ) {
 
     # Running at hard limit is critical
-    $EXTRAS{'tcp_running'} = q{;} . $PERFDATA{'tcp_hard_limit'};
+    $EXTRAS{'tcp_running'} = q{;;} . $PERFDATA{'tcp_hard_limit'};
 }
 
 for my $k (@STATUS_KEYS) {
