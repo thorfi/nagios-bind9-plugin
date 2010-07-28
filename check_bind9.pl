@@ -174,9 +174,12 @@ my %STATS_ENDMAP = (
 
 # Regular expressions used to
 # parse rndc stats data
-my $STATS_RESET_RE  = q{+++ Statistics Dump +++};
-my $STATS_STARTS_RE = q{^(} . ( join q{|}, @STATS_KEYS ) . q{)};
-my $STATS_ENDS_RE   = q{(} . ( join q{|}, keys %STATS_ENDMAP ) . q{)\s*$};
+my $STATS_RESET_RE = quotemeta q{+++ Statistics Dump +++};
+
+my $STATS_STARTS_RE =
+    q{^(} . ( join q{|}, map { quotemeta $_ } @STATS_KEYS ) . q{)};
+my $STATS_ENDS_RE =
+    q{(} . ( join q{|}, map { quotemeta $_ } keys %STATS_ENDMAP ) . q{)$};
 
 my @STATUS_KEYS = qw(
     cpus
@@ -266,7 +269,7 @@ else {
 
     # We have a stats file, so seek backwards in it and read it out.
 
-    $stats_fh->seek( $OPTIONS{'stats-seek'}, SEEK_END );
+    $stats_fh->seek( -$OPTIONS{'stats-seek'}, SEEK_END );
 
     while ( my $stats_line = $stats_fh->getline() ) {
         chomp $stats_line;
