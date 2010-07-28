@@ -288,7 +288,7 @@ else {
             my @bits   = split /\s+/, $stats_line;
             my $number = $bits[-1];
             if ( $number =~ m/^\d+$/ ) {
-                $PERFDATA{$k} = $bits[-1];
+                $PERFDATA{$k} = $number;
             }
             next;
         }
@@ -300,7 +300,7 @@ else {
             my @bits = split /\s+/, $stats_line;
             my $number = $bits[0];
             if ( $number =~ m/^\d+$/ ) {
-                $PERFDATA{$k} = $bits[-1];
+                $PERFDATA{$k} = $number;
             }
             next;
         }
