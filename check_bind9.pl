@@ -73,8 +73,7 @@ my %PS_OPTS_FOR_OS = (
 
 my $PS_OPTIONS = $PS_OPTS_FOR_OS{$OSNAME} || q{auxww};
 
-my $print_help_sref;
-$print_help_sref = sub {
+my $print_help_sref = sub {
     print qq{Usage: $PROGRAM_NAME
    --ps-path: /.pid (Default: $OPTIONS{'pid-path'})
   --pid-path: /path/to/named.pid (Default: $OPTIONS{'pid-path'})
@@ -122,9 +121,9 @@ $LICENSE
 };
 };
 
-sub print_version {
+my $print_version_sref = sub {
     print qq{$VERSION - $COPYRIGHT - $AUTHOR};
-}
+};
 
 my $getopt_result = GetOptions(
     "pid-path=s"   => \$OPTIONS{'pid-path'},
@@ -135,12 +134,12 @@ my $getopt_result = GetOptions(
     "rndc-args=s"  => \$OPTIONS{'rndc-args'},
     "temp-path=s"  => \$OPTIONS{'temp-path'},
     "verbose!"     => \$OPTIONS{'verbose'},
-    "version"      => sub { print_version(); exit $NAGIOS_EXIT_UNKNOWN; },
-    "help"         => sub { &{$print_help_sref}(); exit $NAGIOS_EXIT_UNKNOWN; },
+    "version"      => sub { $print_version_sref->(); exit $NAGIOS_EXIT_UNKNOWN; },
+    "help"         => sub { $print_help_sref->(); exit $NAGIOS_EXIT_UNKNOWN; },
 );
 if ( not $getopt_result ) {
     print qq{Error: Options failure\n};
-    print_help();
+    $print_help_sref->();
     exit $NAGIOS_EXIT_UNKNOWN;
 }
 
