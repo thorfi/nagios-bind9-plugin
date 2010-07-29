@@ -290,6 +290,7 @@ else {
         $stats_line =~ s/^\s+//;
         $stats_line =~ s/\s+$//;
         if ( $stats_line =~ m/$STATS_RESET_RE/i ) {
+
             # Reset the stats, we have a new block
 
             $found_stats_start = 1;
@@ -320,15 +321,15 @@ else {
             next;
         }
     }
-    if (not $found_stats_start) {
-        $exit_message .=
-        q{Failed to find statistics block in --stats-path };
+    if ( not $found_stats_start ) {
+        $exit_message .= q{Failed to find statistics block in --stats-path };
         $exit_message .= $OPTIONS{'stats-path'};
         $exit_message .= q{.};
     }
 }
 
 my $found_status_data = 0;
+
 # Run rndc status to slurp the bind9 status info
 for my $status_line ( slurp_command(@RNDC_STATUS) ) {
     if ( $status_line =~ m/CPUs found: (\d+)/i ) {
@@ -360,18 +361,21 @@ for my $status_line ( slurp_command(@RNDC_STATUS) ) {
     elsif ( $status_line =~ m/tcp clients: (\d+)\/(\d+)/i ) {
         $PERFDATA{'tcp_running'}    = $1;
         $PERFDATA{'tcp_hard_limit'} = $2;
-    } else {
+    }
+    else {
+
         # Skip if we didn't match anything
         next;
     }
+
     # If we did match something, say so
     $found_status_data = 1;
 }
 
-if (not $found_status_data) {
+if ( not $found_status_data ) {
     $exit_message .= q{Failed to find status data in: '};
     $exit_message .= $OPTIONS{'rndc-path'};
-    if (length $OPTIONS{'rndc-args'}) {
+    if ( length $OPTIONS{'rndc-args'} ) {
         $exit_message .= q{ };
         $exit_message .= $OPTIONS{'rndc-args'};
     }
@@ -379,11 +383,12 @@ if (not $found_status_data) {
 }
 
 my $exit_code = $NAGIOS_EXIT_OKAY;
-if (length $exit_message > 0) {
+if ( length $exit_message > 0 ) {
     $exit_code = $NAGIOS_EXIT_WARNING;
     $exit_message =~ s/[\r\n]/ /g;
-} else {
-    $exit_message = 'OK'
+}
+else {
+    $exit_message = 'OK';
 }
 
 print qq{BIND9 $exit_message ;};
