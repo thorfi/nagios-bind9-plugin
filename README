@@ -16,3 +16,34 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
+This plugin expects to run on the host running BIND.
+
+Please run it with --help to see where it expects to find a variety of
+files and commands, and the options you are likely to require to
+provide.
+
+The process the plugin goes through is:
+
+1. Check for existence of file at --pid-path
+   Return critical failure if missing/empty
+
+2. Read the PID contents of file at --pid-path 
+   Obtain a process list (either 'ps auxww' or 'ps -ef' depending on your OS).
+   Return critical failure if PID is not in the process list
+
+3. Execute 'rndc stats'  (--rndc-path --rndc-args stats)
+   in order to generate the latest stats into --stats-path
+   NOTE: You may need to a. configure BIND to dump statistics at a path
+   b. configure something to regularly roll/truncate the stats file
+
+4. open the file --stats-path, seek backwards --stats-seek bytes
+   read the file and parse the last statistics block for the 
+   numbers we are interested in for performance data.
+   Return a warning if we cannot open and read the file, or do not
+   find a statistics block.
+
+5. Execute 'rndc status' (--rndc-path --rndc-args status)
+   and parse its output for more performance data.
+   Return a warning if we cannot find any status data.
+
+6. Return status and any performance data.

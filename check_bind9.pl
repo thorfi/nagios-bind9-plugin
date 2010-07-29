@@ -25,8 +25,12 @@ my $SOURCE    = q{GIT: http://github.com/thorfi/nagios-bind9-plugin};
 my $LICENSE =
     q{Licensed as GPLv3 or later - http://www.gnu.org/licenses/gpl.html};
 
+# Force all stderr to stdout
+*STDERR = *STDOUT;
+
 use strict;
 use warnings;
+use Carp ();
 use English;
 use Fcntl qw(:seek);
 use Getopt::Long;
@@ -53,8 +57,9 @@ my %OPTIONS = (
     q{rndc-path}  => q{rndc},
     q{rndc-args}  => q{},
     q{sudo-path}  => q{},
-    q{stats-path} => q{/var/cache/bind/named.stats},
+    q{stats-path} => q{/var/run/named.stats},
     q{stats-seek} => 20480,
+    q{timeout}    => 30,
     q{verbose}    => 0,
 );
 
@@ -78,13 +83,14 @@ my $PS_OPTIONS = $PS_OPTS_FOR_OS{$OSNAME} || q{auxww};
 
 my $print_help_sref = sub {
     print qq{Usage: $PROGRAM_NAME
-   --ps-path: /.pid (Default: $OPTIONS{'pid-path'})
   --pid-path: /path/to/named.pid (Default: $OPTIONS{'pid-path'})
+--stats-path: /path/to/named.stats (Default: $OPTIONS{'stats-path'})
+   --ps-path: /path/to/bin/ps (Default: $OPTIONS{'ps-path'})
  --rndc-path: /path/to/sbin/rndc (Default: $OPTIONS{'rndc-path'})
  --sudo-path: /path/to/bin/sudo (Default: None)
---stats-path: /path/to/named.stats (Default: $OPTIONS{'stats-path'})
 --stats-seek: bytes to seek backwards to read last stats (Default: $OPTIONS{'stats-seek'})
  --rndc-args: additional args to rndc (Default: None)
+   --timeout: seconds to wait before dying (Default: $OPTIONS{'timeout'})
    --verbose: print additional verbose data to stderr
    --version: print version and exit
       --help: print this help and exit
@@ -136,6 +142,7 @@ my $getopt_result = GetOptions(
     "stats-seek=i" => \$OPTIONS{'stats-seek'},
     "rndc-args=s"  => \$OPTIONS{'rndc-args'},
     "temp-path=s"  => \$OPTIONS{'temp-path'},
+    "timeout=i"    => \$OPTIONS{'timeout'},
     "verbose!"     => \$OPTIONS{'verbose'},
     "version" => sub { $print_version_sref->(); exit $NAGIOS_EXIT_UNKNOWN; },
     "help" => sub { $print_help_sref->(); exit $NAGIOS_EXIT_UNKNOWN; },
@@ -145,6 +152,12 @@ if ( not $getopt_result ) {
     $print_help_sref->();
     exit $NAGIOS_EXIT_UNKNOWN;
 }
+
+$SIG{'ALRM'} = sub {
+    Carp::cluck(q{BIND9 plugin timed out});
+    exit $NAGIOS_EXIT_WARNING;
+};
+alarm $OPTIONS{'timeout'};
 
 my @RNDC_ARGV = ();
 if ( length $OPTIONS{'sudo-path'} ) {
@@ -253,8 +266,7 @@ if ( $OPTIONS{'pid-path'} ) {
     }
 }
 
-my $exit_code    = $NAGIOS_EXIT_OKAY;
-my $exit_message = 'OK';
+my $exit_message = q{};
 
 # Run rndc stats to put latest data in the stats-path
 system @RNDC_STATS;
@@ -262,23 +274,25 @@ system @RNDC_STATS;
 # and slurp the latest data from stats-path
 my $stats_fh = new IO::File $OPTIONS{'stats-path'}, q{r};
 if ( not defined $stats_fh ) {
-    $exit_code = $NAGIOS_EXIT_WARNING;
-    $exit_message =
-        qq{failed to open --stats-path } . $OPTIONS{'stats-path'} . q{: $!};
+    $exit_message .= qq{Failed to open --stats-path };
+    $exit_message .= $OPTIONS{'stats-path'};
+    $exit_message .= qq{: $!.};
 }
 else {
 
     # We have a stats file, so seek backwards in it and read it out.
 
     $stats_fh->seek( -$OPTIONS{'stats-seek'}, SEEK_END );
+    my $found_stats_start = 0;
 
     while ( my $stats_line = $stats_fh->getline() ) {
         chomp $stats_line;
         $stats_line =~ s/^\s+//;
         $stats_line =~ s/\s+$//;
         if ( $stats_line =~ m/$STATS_RESET_RE/i ) {
-
             # Reset the stats, we have a new block
+
+            $found_stats_start = 1;
             for my $k (@STATS_KEYS) {
                 $PERFDATA{$k} = 0;
             }
@@ -306,8 +320,15 @@ else {
             next;
         }
     }
+    if (not $found_stats_start) {
+        $exit_message .=
+        q{Failed to find statistics block in --stats-path };
+        $exit_message .= $OPTIONS{'stats-path'};
+        $exit_message .= q{.};
+    }
 }
 
+my $found_status_data = 0;
 # Run rndc status to slurp the bind9 status info
 for my $status_line ( slurp_command(@RNDC_STATUS) ) {
     if ( $status_line =~ m/CPUs found: (\d+)/i ) {
@@ -339,7 +360,30 @@ for my $status_line ( slurp_command(@RNDC_STATUS) ) {
     elsif ( $status_line =~ m/tcp clients: (\d+)\/(\d+)/i ) {
         $PERFDATA{'tcp_running'}    = $1;
         $PERFDATA{'tcp_hard_limit'} = $2;
+    } else {
+        # Skip if we didn't match anything
+        next;
     }
+    # If we did match something, say so
+    $found_status_data = 1;
+}
+
+if (not $found_status_data) {
+    $exit_message .= q{Failed to find status data in: '};
+    $exit_message .= $OPTIONS{'rndc-path'};
+    if (length $OPTIONS{'rndc-args'}) {
+        $exit_message .= q{ };
+        $exit_message .= $OPTIONS{'rndc-args'};
+    }
+    $exit_message .= q{ status'.};
+}
+
+my $exit_code = $NAGIOS_EXIT_OKAY;
+if (length $exit_message > 0) {
+    $exit_code = $NAGIOS_EXIT_WARNING;
+    $exit_message =~ s/[\r\n]/ /g;
+} else {
+    $exit_message = 'OK'
 }
 
 print qq{BIND9 $exit_message ;};
