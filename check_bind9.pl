@@ -234,11 +234,9 @@ if ( $OPTIONS{'pid-path'} ) {
         for my $ps_line (@ps_lines) {
             my @bits = split /\s+/, $ps_line;
             if ( ( int @bits ) < 2 ) {
-                print "X\n";
                 next;
             }
             if ( $bits[1] eq $BIND_PID ) {
-                print "Y\n";
                 $ps_found = 1;
                 last;
             }
