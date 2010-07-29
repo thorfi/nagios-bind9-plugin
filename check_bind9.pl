@@ -60,7 +60,7 @@ my %OPTIONS = (
 # column two (whitespace separated).
 # Column two will be expected to match the whitespace trimmed contents
 # of the --pid-path
-my $PS_OPTS_FOR_OS = (
+my %PS_OPTS_FOR_OS = (
     q{darwin}  => q{auxww},
     q{freebsd} => q{auxww},
     q{linux}   => q{auxww},
@@ -73,7 +73,8 @@ my $PS_OPTS_FOR_OS = (
 
 my $PS_OPTIONS = $PS_OPTS_FOR_OS{$OSNAME} || q{auxww};
 
-my $print_help_sref = sub {
+my $print_help_sref;
+$print_help_sref = sub {
     print qq{Usage: $PROGRAM_NAME
    --ps-path: /.pid (Default: $OPTIONS{'pid-path'})
   --pid-path: /path/to/named.pid (Default: $OPTIONS{'pid-path'})
@@ -119,7 +120,7 @@ $AUTHOR
 $SOURCE
 $LICENSE
 };
-}
+};
 
 sub print_version {
     print qq{$VERSION - $COPYRIGHT - $AUTHOR};
@@ -179,7 +180,7 @@ my $STATS_RESET_RE = quotemeta q{+++ Statistics Dump +++};
 my $STATS_STARTS_RE =
     q{^(} . ( join q{|}, map { quotemeta $_ } @STATS_KEYS ) . q{)};
 my $STATS_ENDS_RE = q{(}
-    . ( join q{|}, map { quotemeta $_ } keys %{$STATS_ENDMAP_href} ) . q{)$};
+    . ( join q{|}, map { quotemeta $_ } keys %STATS_ENDMAP ) . q{)$};
 
 my @STATUS_KEYS = qw(
         cpus
@@ -363,9 +364,9 @@ print qq{ |};
 for my $k ( @STATS_KEYS ) {
     print q{ '} . $k . q{'=} . $PERFDATA{$k} . q{c};
 }
-my $EXTRAS_href = {
+my %EXTRAS = (
     q{debug} => ';1',    # Warning if in debug
-};
+);
 if ( $PERFDATA{'udp_soft_limit'} + $PERFDATA{'udp_hard_limit'}
     > 0 )
 {
