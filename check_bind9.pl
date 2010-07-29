@@ -2,6 +2,9 @@
 #
 # host_check_bind.pl - Nagios BIND9 Monitoring Plugin - Host Check
 #
+# Indicate compatibility with the Nagios embedded perl interpreter
+# nagios: +epn
+#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
@@ -27,7 +30,7 @@ use warnings;
 use English;
 use Fcntl qw(:seek);
 use Getopt::Long;
-use IPC::Open2;
+use IO::Handle;
 use IO::File;
 
 # nagios exit codes
@@ -134,8 +137,8 @@ my $getopt_result = GetOptions(
     "rndc-args=s"  => \$OPTIONS{'rndc-args'},
     "temp-path=s"  => \$OPTIONS{'temp-path'},
     "verbose!"     => \$OPTIONS{'verbose'},
-    "version"      => sub { $print_version_sref->(); exit $NAGIOS_EXIT_UNKNOWN; },
-    "help"         => sub { $print_help_sref->(); exit $NAGIOS_EXIT_UNKNOWN; },
+    "version" => sub { $print_version_sref->(); exit $NAGIOS_EXIT_UNKNOWN; },
+    "help" => sub { $print_help_sref->(); exit $NAGIOS_EXIT_UNKNOWN; },
 );
 if ( not $getopt_result ) {
     print qq{Error: Options failure\n};
@@ -154,7 +157,7 @@ if ( length $OPTIONS{'rndc-args'} ) {
     push @RNDC_ARGV, split /\s+/, $args;
 }
 
-my @RNDC_STATS = ( @RNDC_ARGV, q{stats}, );
+my @RNDC_STATS  = ( @RNDC_ARGV, q{stats}, );
 my @RNDC_STATUS = ( @RNDC_ARGV, q{status}, );
 
 my @STATS_KEYS = qw(
@@ -178,23 +181,23 @@ my $STATS_RESET_RE = quotemeta q{+++ Statistics Dump +++};
 
 my $STATS_STARTS_RE =
     q{^(} . ( join q{|}, map { quotemeta $_ } @STATS_KEYS ) . q{)};
-my $STATS_ENDS_RE = q{(}
-    . ( join q{|}, map { quotemeta $_ } keys %STATS_ENDMAP ) . q{)$};
+my $STATS_ENDS_RE =
+    q{(} . ( join q{|}, map { quotemeta $_ } keys %STATS_ENDMAP ) . q{)$};
 
 my @STATUS_KEYS = qw(
-        cpus
-        workers
-        zones
-        debug
-        xfers_running
-        xfers_deferred
-        soa_running
-        udp_running
-        udp_soft_limit
-        udp_hard_limit
-        tcp_running
-        tcp_hard_limit
-    );
+    cpus
+    workers
+    zones
+    debug
+    xfers_running
+    xfers_deferred
+    soa_running
+    udp_running
+    udp_soft_limit
+    udp_hard_limit
+    tcp_running
+    tcp_hard_limit
+);
 
 my @PERFKEYS = ( @STATS_KEYS, @STATUS_KEYS, );
 my %PERFDATA = map { ( $_ => 0, ) } @PERFKEYS;
@@ -226,8 +229,7 @@ if ( $OPTIONS{'pid-path'} ) {
             print qq{BIND9 PID file $path did not contain a number\n};
             exit $NAGIOS_EXIT_CRITICAL;
         }
-        my @ps_lines =
-            slurp_command( $OPTIONS{'ps-path'}, $PS_OPTIONS );
+        my @ps_lines = slurp_command( $OPTIONS{'ps-path'}, $PS_OPTIONS );
         my $ps_found = 0;
         for my $ps_line (@ps_lines) {
             my @bits = split /\s+/, $ps_line;
@@ -262,9 +264,9 @@ system @RNDC_STATS;
 # and slurp the latest data from stats-path
 my $stats_fh = new IO::File $OPTIONS{'stats-path'}, q{r};
 if ( not defined $stats_fh ) {
-    $exit_code    = $NAGIOS_EXIT_WARNING;
-    $exit_message = qq{failed to open --stats-path }
-        . $OPTIONS{'stats-path'} . q{: $!};
+    $exit_code = $NAGIOS_EXIT_WARNING;
+    $exit_message =
+        qq{failed to open --stats-path } . $OPTIONS{'stats-path'} . q{: $!};
 }
 else {
 
@@ -279,7 +281,7 @@ else {
         if ( $stats_line =~ m/$STATS_RESET_RE/i ) {
 
             # Reset the stats, we have a new block
-            for my $k ( @STATS_KEYS ) {
+            for my $k (@STATS_KEYS) {
                 $PERFDATA{$k} = 0;
             }
             next;
@@ -309,7 +311,7 @@ else {
 }
 
 # Run rndc status to slurp the bind9 status info
-for my $status_line ( slurp_command( @RNDC_STATUS ) ) {
+for my $status_line ( slurp_command(@RNDC_STATUS) ) {
     if ( $status_line =~ m/CPUs found: (\d+)/i ) {
         $PERFDATA{'cpus'} = $1;
     }
@@ -349,10 +351,9 @@ if ( defined $BIND_PID ) {
 print q{ Running:};
 print qq{ $PERFDATA{'udp_running'}/$PERFDATA{'udp_soft_limit'}};
 print qq{/$PERFDATA{'udp_hard_limit'} UDP,};
-print
-    qq{ $PERFDATA{'tcp_running'}/$PERFDATA{'tcp_hard_limit'} TCP,};
+print qq{ $PERFDATA{'tcp_running'}/$PERFDATA{'tcp_hard_limit'} TCP,};
 print qq{ $PERFDATA{'xfers_running'} xfers;};
-print qq{ $PERFDATA{'xfers_deferred'} defrd xfers;};
+print qq{ $PERFDATA{'xfers_deferred'} deferred xfers;};
 print qq{ $PERFDATA{'zones'} zones ;};
 print qq{ |};
 
@@ -360,35 +361,27 @@ print qq{ |};
 # http://docs.pnp4nagios.org/pnp-0.6/perfdata_format
 
 # Stats keys are all 'Counter' data
-for my $k ( @STATS_KEYS ) {
+for my $k (@STATS_KEYS) {
     print q{ '} . $k . q{'=} . $PERFDATA{$k} . q{c};
 }
 my %EXTRAS = (
     q{debug} => ';1',    # Warning if in debug
 );
-if ( $PERFDATA{'udp_soft_limit'} + $PERFDATA{'udp_hard_limit'}
-    > 0 )
-{
+if ( $PERFDATA{'udp_soft_limit'} + $PERFDATA{'udp_hard_limit'} > 0 ) {
 
     # Running at soft limit is warning, running at hard limit is critical
 
     $EXTRAS{'udp_running'} = q{;}
-        . ( $PERFDATA{'udp_soft_limit'}
-        ? $PERFDATA{'udp_soft_limit'}
-        : q{} )
-        . q{;}
-        . ( $PERFDATA{'udp_hard_limit'}
-        ? $PERFDATA{'udp_hard_limit'}
-        : q{} );
+        . ( $PERFDATA{'udp_soft_limit'} || q{} ) . q{;}
+        . ( $PERFDATA{'udp_hard_limit'} || q{} );
 }
 if ( $PERFDATA{'tcp_hard_limit'} ) {
 
     # Running at hard limit is critical
-    $EXTRAS{'tcp_running'} =
-        q{;;} . $PERFDATA{'tcp_hard_limit'};
+    $EXTRAS{'tcp_running'} = q{;;} . $PERFDATA{'tcp_hard_limit'};
 }
 
-for my $k ( @STATUS_KEYS ) {
+for my $k (@STATUS_KEYS) {
     print q{ '} . $k . q{'=} . $PERFDATA{$k};
     if ( defined $EXTRAS{$k} ) {
         print $EXTRAS{$k};
