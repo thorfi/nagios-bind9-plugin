@@ -44,7 +44,7 @@ my $NAGIOS_EXIT_WARNING  = 1;
 my $NAGIOS_EXIT_CRITICAL = 2;
 my $NAGIOS_EXIT_UNKNOWN  = 3;
 
-my %OPTIONS = (
+my $OPTIONS_href = {
     q{ps-path}    => q{ps},
     q{pid-path}   => q{/var/run/named.pid},
     q{rndc-path}  => q{rndc},
@@ -53,14 +53,14 @@ my %OPTIONS = (
     q{stats-path} => q{/var/cache/bind/named.stats},
     q{stats-seek} => 20480,
     q{verbose}    => 0,
-);
+};
 
 # Options to supply to ps command
 # These commands are presumed to result in lines with the PID in
 # column two (whitespace separated).
 # Column two will be expected to match the whitespace trimmed contents
 # of the --pid-path
-my %PS_OPTS_FOR_OS = (
+my $PS_OPTS_FOR_OS_href = {
     q{darwin}  => q{auxww},
     q{freebsd} => q{auxww},
     q{linux}   => q{auxww},
@@ -69,18 +69,18 @@ my %PS_OPTS_FOR_OS = (
     q{openbsd} => q{auxww},
     q{solaris} => q{-ef},
     q{sunos}   => q{auxww},
-);
+};
 
-my $PS_OPTIONS = $PS_OPTS_FOR_OS{$OSNAME} || q{auxww};
+my $PS_OPTIONS = $PS_OPTS_FOR_OS_href->{$OSNAME} || q{auxww};
 
 sub print_help {
     print qq{Usage: $PROGRAM_NAME
-   --ps-path: /.pid (Default: $OPTIONS{'pid-path'})
-  --pid-path: /path/to/named.pid (Default: $OPTIONS{'pid-path'})
- --rndc-path: /path/to/sbin/rndc (Default: $OPTIONS{'rndc-path'})
+   --ps-path: /.pid (Default: $OPTIONS_href->{'pid-path'})
+  --pid-path: /path/to/named.pid (Default: $OPTIONS_href->{'pid-path'})
+ --rndc-path: /path/to/sbin/rndc (Default: $OPTIONS_href->{'rndc-path'})
  --sudo-path: /path/to/bin/sudo (Default: None)
---stats-path: /path/to/named.stats (Default: $OPTIONS{'stats-path'})
---stats-seek: bytes to seek backwards to read last stats (Default: $OPTIONS{'stats-seek'})
+--stats-path: /path/to/named.stats (Default: $OPTIONS_href->{'stats-path'})
+--stats-seek: bytes to seek backwards to read last stats (Default: $OPTIONS_href->{'stats-seek'})
  --rndc-args: additional args to rndc (Default: None)
    --verbose: print additional verbose data to stderr
    --version: print version and exit
@@ -103,7 +103,7 @@ in --stats-path as well as gathered from rndc status
 If --sudo-path is specified then it will be used to call rndc
 };
 
-    if ( not defined $PS_OPTS_FOR_OS{$OSNAME} ) {
+    if ( not defined $PS_OPTS_FOR_OS_href->{$OSNAME} ) {
         print qq{
 Unknown \$OSNAME $OSNAME, please report to $AUTHOR with OSNAME and ps options
 that will result in lines with the PID in column two (whitespace separated).
@@ -126,14 +126,14 @@ sub print_version {
 }
 
 my $getopt_result = GetOptions(
-    "pid-path=s"   => \$OPTIONS{'pid-path'},
-    "rndc-path=s"  => \$OPTIONS{'rndc-path'},
-    "sudo-path=s"  => \$OPTIONS{'sudo-path'},
-    "stats-path=s" => \$OPTIONS{'stats-path'},
-    "stats-seek=i" => \$OPTIONS{'stats-seek'},
-    "rndc-args=s"  => \$OPTIONS{'rndc-args'},
-    "temp-path=s"  => \$OPTIONS{'temp-path'},
-    "verbose!"     => \$OPTIONS{'verbose'},
+    "pid-path=s"   => \$OPTIONS_href->{'pid-path'},
+    "rndc-path=s"  => \$OPTIONS_href->{'rndc-path'},
+    "sudo-path=s"  => \$OPTIONS_href->{'sudo-path'},
+    "stats-path=s" => \$OPTIONS_href->{'stats-path'},
+    "stats-seek=i" => \$OPTIONS_href->{'stats-seek'},
+    "rndc-args=s"  => \$OPTIONS_href->{'rndc-args'},
+    "temp-path=s"  => \$OPTIONS_href->{'temp-path'},
+    "verbose!"     => \$OPTIONS_href->{'verbose'},
     "version"      => sub { print_version(); exit $NAGIOS_EXIT_UNKNOWN; },
     "help"         => sub { print_help(); exit $NAGIOS_EXIT_UNKNOWN; },
 );
@@ -143,24 +143,26 @@ if ( not $getopt_result ) {
     exit $NAGIOS_EXIT_UNKNOWN;
 }
 
-my @RNDC_ARGV = ();
-if ( length $OPTIONS{'sudo-path'} ) {
-    push @RNDC_ARGV, $OPTIONS{'sudo-path'};
+my $RNDC_ARGV_lref = [];
+if ( length $OPTIONS_href->{'sudo-path'} ) {
+    push @{$RNDC_ARGV_lref}, $OPTIONS_href->{'sudo-path'};
 }
-push @RNDC_ARGV, $OPTIONS{'rndc-path'};
-if ( length $OPTIONS{'rndc-args'} ) {
-    my $args = $OPTIONS{'rndc-args'};
+push @{$RNDC_ARGV_lref}, $OPTIONS_href->{'rndc-path'};
+if ( length $OPTIONS_href->{'rndc-args'} ) {
+    my $args = $OPTIONS_href->{'rndc-args'};
     $args =~ s/[;<>|&]//g;
-    push @RNDC_ARGV, split /\s+/, $args;
+    push @{$RNDC_ARGV_lref}, split /\s+/, $args;
 }
 
-my @RNDC_STATS  = ( @RNDC_ARGV, q{stats}, );
-my @RNDC_STATUS = ( @RNDC_ARGV, q{status}, );
+my $RNDC_STATS_lref  = [ @{$RNDC_ARGV_lref}, q{stats}, ];
+my $RNDC_STATUS_lref = [ @{$RNDC_ARGV_lref}, q{status}, ];
 
-my @STATS_KEYS = qw(
-    success referral nxrrset nxdomain recursion failure duplicate dropped
-);
-my %STATS_ENDMAP = (
+my $STATS_KEYS_lref = [
+    qw(
+        success referral nxrrset nxdomain recursion failure duplicate dropped
+        )
+];
+my $STATS_ENDMAP_href = {
     'queries resulted in successful answer'        => 'success',
     'queries resulted in referral answer'          => 'referral',
     'queries resulted in non authoritative answer' => 'referral',
@@ -170,34 +172,36 @@ my %STATS_ENDMAP = (
     'queries resulted in SERVFAIL'                 => 'failure',
     'duplicate queries received'                   => 'duplicate',
     'queries dropped'                              => 'dropped',
-);
+};
 
 # Regular expressions used to
 # parse rndc stats data
 my $STATS_RESET_RE = quotemeta q{+++ Statistics Dump +++};
 
 my $STATS_STARTS_RE =
-    q{^(} . ( join q{|}, map { quotemeta $_ } @STATS_KEYS ) . q{)};
-my $STATS_ENDS_RE =
-    q{(} . ( join q{|}, map { quotemeta $_ } keys %STATS_ENDMAP ) . q{)$};
+    q{^(} . ( join q{|}, map { quotemeta $_ } @{$STATS_KEYS_lref} ) . q{)};
+my $STATS_ENDS_RE = q{(}
+    . ( join q{|}, map { quotemeta $_ } keys %{$STATS_ENDMAP_href} ) . q{)$};
 
-my @STATUS_KEYS = qw(
-    cpus
-    workers
-    zones
-    debug
-    xfers_running
-    xfers_deferred
-    soa_running
-    udp_running
-    udp_soft_limit
-    udp_hard_limit
-    tcp_running
-    tcp_hard_limit
-);
+my $STATUS_KEYS_lref = [
+    qw(
+        cpus
+        workers
+        zones
+        debug
+        xfers_running
+        xfers_deferred
+        soa_running
+        udp_running
+        udp_soft_limit
+        udp_hard_limit
+        tcp_running
+        tcp_hard_limit
+        )
+];
 
-my @PERFKEYS = ( @STATS_KEYS, @STATUS_KEYS, );
-my %PERFDATA = map { ( $_ => 0, ) } @PERFKEYS;
+my $PERFKEYS_lref = [ @{$STATS_KEYS_lref}, @{$STATUS_KEYS_lref}, ];
+my $PERFDATA_href = map { ( $_ => 0, ) } @{$PERFKEYS_lref};
 
 sub slurp_command {
     my $fh = new IO::Handle;
@@ -206,8 +210,8 @@ sub slurp_command {
 }
 
 my $BIND_PID;
-if ( $OPTIONS{'pid-path'} ) {
-    my $path = $OPTIONS{'pid-path'};
+if ( $OPTIONS_href->{'pid-path'} ) {
+    my $path = $OPTIONS_href->{'pid-path'};
     if ( -f $path ) {
         my $fh = new IO::File $path, q{r};
         if ( not defined $fh ) {
@@ -226,7 +230,8 @@ if ( $OPTIONS{'pid-path'} ) {
             print qq{BIND9 PID file $path did not contain a number\n};
             exit $NAGIOS_EXIT_CRITICAL;
         }
-        my @ps_lines = slurp_command( $OPTIONS{'ps-path'}, $PS_OPTIONS );
+        my @ps_lines =
+            slurp_command( $OPTIONS_href->{'ps-path'}, $PS_OPTIONS );
         my $ps_found = 0;
         for my $ps_line (@ps_lines) {
             my @bits = split /\s+/, $ps_line;
@@ -256,20 +261,20 @@ my $exit_code    = $NAGIOS_EXIT_OKAY;
 my $exit_message = 'OK';
 
 # Run rndc stats to put latest data in the stats-path
-system @RNDC_STATS;
+system @{$RNDC_STATS_lref};
 
 # and slurp the latest data from stats-path
-my $stats_fh = new IO::File $OPTIONS{'stats-path'}, q{r};
+my $stats_fh = new IO::File $OPTIONS_href->{'stats-path'}, q{r};
 if ( not defined $stats_fh ) {
-    $exit_code = $NAGIOS_EXIT_WARNING;
-    $exit_message =
-        qq{failed to open --stats-path } . $OPTIONS{'stats-path'} . q{: $!};
+    $exit_code    = $NAGIOS_EXIT_WARNING;
+    $exit_message = qq{failed to open --stats-path }
+        . $OPTIONS_href->{'stats-path'} . q{: $!};
 }
 else {
 
     # We have a stats file, so seek backwards in it and read it out.
 
-    $stats_fh->seek( -$OPTIONS{'stats-seek'}, SEEK_END );
+    $stats_fh->seek( -$OPTIONS_href->{'stats-seek'}, SEEK_END );
 
     while ( my $stats_line = $stats_fh->getline() ) {
         chomp $stats_line;
@@ -278,8 +283,8 @@ else {
         if ( $stats_line =~ m/$STATS_RESET_RE/i ) {
 
             # Reset the stats, we have a new block
-            for my $k (@STATS_KEYS) {
-                $PERFDATA{$k} = 0;
+            for my $k ( @{$STATS_KEYS_lref} ) {
+                $PERFDATA_href->{$k} = 0;
             }
             next;
         }
@@ -288,19 +293,19 @@ else {
             my @bits   = split /\s+/, $stats_line;
             my $number = $bits[-1];
             if ( $number =~ m/^\d+$/ ) {
-                $PERFDATA{$k} = $number;
+                $PERFDATA_href->{$k} += $number;
             }
             next;
         }
         if ( $stats_line =~ m/$STATS_ENDS_RE/i ) {
-            my $k = $STATS_ENDMAP{$1};
+            my $k = $STATS_ENDMAP_href->{$1};
             if ( not defined $k ) {
                 next;
             }
             my @bits = split /\s+/, $stats_line;
             my $number = $bits[0];
             if ( $number =~ m/^\d+$/ ) {
-                $PERFDATA{$k} = $number;
+                $PERFDATA_href->{$k} += $number;
             }
             next;
         }
@@ -308,36 +313,36 @@ else {
 }
 
 # Run rndc status to slurp the bind9 status info
-for my $status_line ( slurp_command(@RNDC_STATUS) ) {
+for my $status_line ( slurp_command( @{$RNDC_STATUS_lref} ) ) {
     if ( $status_line =~ m/CPUs found: (\d+)/i ) {
-        $PERFDATA{'cpus'} = $1;
+        $PERFDATA_href->{'cpus'} = $1;
     }
     elsif ( $status_line =~ m/worker threads: (\d+)/i ) {
-        $PERFDATA{'workers'} = $1;
+        $PERFDATA_href->{'workers'} = $1;
     }
     elsif ( $status_line =~ m/number of zones: (\d+)/i ) {
-        $PERFDATA{'zones'} = $1;
+        $PERFDATA_href->{'zones'} = $1;
     }
     elsif ( $status_line =~ m/debug level: (\d+)/i ) {
-        $PERFDATA{'debug'} = $1;
+        $PERFDATA_href->{'debug'} = $1;
     }
     elsif ( $status_line =~ m/xfers running: (\d+)/i ) {
-        $PERFDATA{'xfers_running'} = $1;
+        $PERFDATA_href->{'xfers_running'} = $1;
     }
     elsif ( $status_line =~ m/xfers deferred: (\d+)/i ) {
-        $PERFDATA{'xfers_deferred'} = $1;
+        $PERFDATA_href->{'xfers_deferred'} = $1;
     }
     elsif ( $status_line =~ m/soa queries in progress: (\d+)/i ) {
-        $PERFDATA{'soa_running'} = $1;
+        $PERFDATA_href->{'soa_running'} = $1;
     }
     elsif ( $status_line =~ m/recursive clients: (\d+)\/(\d+)\/(\d+)/i ) {
-        $PERFDATA{'udp_running'}    = $1;
-        $PERFDATA{'udp_soft_limit'} = $2;
-        $PERFDATA{'udp_hard_limit'} = $3;
+        $PERFDATA_href->{'udp_running'}    = $1;
+        $PERFDATA_href->{'udp_soft_limit'} = $2;
+        $PERFDATA_href->{'udp_hard_limit'} = $3;
     }
     elsif ( $status_line =~ m/tcp clients: (\d+)\/(\d+)/i ) {
-        $PERFDATA{'tcp_running'}    = $1;
-        $PERFDATA{'tcp_hard_limit'} = $2;
+        $PERFDATA_href->{'tcp_running'}    = $1;
+        $PERFDATA_href->{'tcp_hard_limit'} = $2;
     }
 }
 
@@ -346,43 +351,51 @@ if ( defined $BIND_PID ) {
     print qq{ PID $BIND_PID ;};
 }
 print q{ Running:};
-print qq{ $PERFDATA{'udp_running'}/$PERFDATA{'udp_soft_limit'}};
-print qq{/$PERFDATA{'udp_hard_limit'} UDP,};
-print qq{ $PERFDATA{'tcp_running'}/$PERFDATA{'tcp_hard_limit'} TCP,};
-print qq{ $PERFDATA{'xfers_running'} xfers;};
-print qq{ $PERFDATA{'xfers_deferred'} defrd xfers;};
-print qq{ $PERFDATA{'zones'} zones ;};
+print qq{ $PERFDATA_href->{'udp_running'}/$PERFDATA_href->{'udp_soft_limit'}};
+print qq{/$PERFDATA_href->{'udp_hard_limit'} UDP,};
+print
+    qq{ $PERFDATA_href->{'tcp_running'}/$PERFDATA_href->{'tcp_hard_limit'} TCP,};
+print qq{ $PERFDATA_href->{'xfers_running'} xfers;};
+print qq{ $PERFDATA_href->{'xfers_deferred'} defrd xfers;};
+print qq{ $PERFDATA_href->{'zones'} zones ;};
 print qq{ |};
 
 # Generate perfdata in PNP4Nagios format
 # http://docs.pnp4nagios.org/pnp-0.6/perfdata_format
 
 # Stats keys are all 'Counter' data
-for my $k (@STATS_KEYS) {
-    print q{ '} . $k . q{'=} . $PERFDATA{$k} . q{c};
+for my $k ( @{$STATS_KEYS_lref} ) {
+    print q{ '} . $k . q{'=} . $PERFDATA_href->{$k} . q{c};
 }
-my %EXTRAS = (
+my $EXTRAS_href = {
     q{debug} => ';1',    # Warning if in debug
-);
-if ( $PERFDATA{'udp_soft_limit'} + $PERFDATA{'udp_hard_limit'} > 0 ) {
+};
+if ( $PERFDATA_href->{'udp_soft_limit'} + $PERFDATA_href->{'udp_hard_limit'}
+    > 0 )
+{
 
     # Running at soft limit is warning, running at hard limit is critical
 
-    $EXTRAS{'udp_running'} = q{;}
-        . ( $PERFDATA{'udp_soft_limit'} ? $PERFDATA{'udp_soft_limit'} : q{} )
+    $EXTRAS_href->{'udp_running'} = q{;}
+        . ( $PERFDATA_href->{'udp_soft_limit'}
+        ? $PERFDATA_href->{'udp_soft_limit'}
+        : q{} )
         . q{;}
-        . ( $PERFDATA{'udp_hard_limit'} ? $PERFDATA{'udp_hard_limit'} : q{} );
+        . ( $PERFDATA_href->{'udp_hard_limit'}
+        ? $PERFDATA_href->{'udp_hard_limit'}
+        : q{} );
 }
-if ( $PERFDATA{'tcp_hard_limit'} ) {
+if ( $PERFDATA_href->{'tcp_hard_limit'} ) {
 
     # Running at hard limit is critical
-    $EXTRAS{'tcp_running'} = q{;;} . $PERFDATA{'tcp_hard_limit'};
+    $EXTRAS_href->{'tcp_running'} =
+        q{;;} . $PERFDATA_href->{'tcp_hard_limit'};
 }
 
-for my $k (@STATUS_KEYS) {
-    print q{ '} . $k . q{'=} . $PERFDATA{$k};
-    if ( defined $EXTRAS{$k} ) {
-        print $EXTRAS{$k};
+for my $k ( @{$STATUS_KEYS_lref} ) {
+    print q{ '} . $k . q{'=} . $PERFDATA_href->{$k};
+    if ( defined $EXTRAS_href->{$k} ) {
+        print $EXTRAS_href->{$k};
     }
 }
 exit $exit_code;
