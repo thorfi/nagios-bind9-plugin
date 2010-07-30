@@ -409,7 +409,7 @@ print qq{ |};
 
 # Stats keys are all 'Counter' data
 for my $k (@STATS_KEYS) {
-    print q{ '} . $k . q{'=} . $PERFDATA{$k} . q{c};
+    print q{ } , $k , q{=} , $PERFDATA{$k} , q{c};
 }
 my %EXTRAS = (
     q{debug} => ';1',    # Warning if in debug
@@ -429,7 +429,7 @@ if ( $PERFDATA{'tcp_hard_limit'} ) {
 }
 
 for my $k (@STATUS_KEYS) {
-    print q{ '} . $k . q{'=} . $PERFDATA{$k};
+    print q{ } , $k , q{=} , $PERFDATA{$k};
     if ( defined $EXTRAS{$k} ) {
         print $EXTRAS{$k};
     }
