@@ -60,7 +60,6 @@ my %OPTIONS = (
     q{stats-path} => q{/var/run/named.stats},
     q{stats-seek} => 20480,
     q{timeout}    => 30,
-    q{verbose}    => 0,
 );
 
 # Options to supply to ps command
@@ -91,7 +90,6 @@ my $print_help_sref = sub {
 --stats-seek: bytes to seek backwards to read last stats (Default: $OPTIONS{'stats-seek'})
  --rndc-args: additional args to rndc (Default: None)
    --timeout: seconds to wait before dying (Default: $OPTIONS{'timeout'})
-   --verbose: print additional verbose data to stderr
    --version: print version and exit
       --help: print this help and exit
 
@@ -143,7 +141,6 @@ my $getopt_result = GetOptions(
     "rndc-args=s"  => \$OPTIONS{'rndc-args'},
     "temp-path=s"  => \$OPTIONS{'temp-path'},
     "timeout=i"    => \$OPTIONS{'timeout'},
-    "verbose!"     => \$OPTIONS{'verbose'},
     "version" => sub { $print_version_sref->(); exit $NAGIOS_EXIT_UNKNOWN; },
     "help" => sub { $print_help_sref->(); exit $NAGIOS_EXIT_UNKNOWN; },
 );
