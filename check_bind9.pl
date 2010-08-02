@@ -19,7 +19,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 my $COPYRIGHT = q{Copyright (C) 2010};
-my $VERSION   = q{Version 0.1};
+my $VERSION   = q{Version 0.2.0};
 my $AUTHOR    = q{David Goh <david@goh.id.au> - http://goh.id.au/~david/};
 my $SOURCE    = q{GIT: http://github.com/thorfi/nagios-bind9-plugin};
 my $LICENSE =
