@@ -245,6 +245,7 @@ if ( $OPTIONS{'pid-path'} ) {
         my @ps_lines = slurp_command( $OPTIONS{'ps-path'}, $PS_OPTIONS );
         my $ps_found = 0;
         for my $ps_line (@ps_lines) {
+            $ps_line =~ s/^\s+//;
             my @bits = split /\s+/, $ps_line;
             if ( ( int @bits ) < 2 ) {
                 next;
