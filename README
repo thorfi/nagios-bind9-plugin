@@ -1,4 +1,4 @@
-Nagios Plugin for BIND9 monitoring
+Nagios Plugins for BIND9 and DNS resolver monitoring
 
 Source: http://github.com/thorfi/nagios-bind9-plugin
 
@@ -16,13 +16,13 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
-This plugin expects to run on the host running BIND.
+The check_bind9.pl plugin expects to run on the host running BIND.
 
 Please run it with --help to see where it expects to find a variety of
 files and commands, and the options you are likely to require to
 provide.
 
-The process the plugin goes through is:
+The process the check_bind9.pl plugin goes through is:
 
 1. Check for existence of file at --pid-path
    Return critical failure if missing/empty
@@ -47,3 +47,41 @@ The process the plugin goes through is:
    Return a warning if we cannot find any status data.
 
 6. Return status and any performance data.
+
+
+The check_dns.pl plugin runs on the host you wish to send the queries
+from, and expects to be given information on where to send queries to.
+
+Please run it with --help to see the options you are required to
+provide.
+
+The process the check_dns.pl plugin goes through is:
+
+1. Resolve IP address for --source-ip
+
+2. Resolve IP address for --resolver
+
+3, Repeat --tries times:
+
+3.a. Form a query packet using --qname --qtype
+
+3.b. Start timer, set up timeout alarm
+
+3.c. Open a UDP socket from --source-ip to --resolver:53, 
+
+3.d. Transmit query packet over the UDP socket
+
+3.e. Await result
+
+3.f. If we receive a "truncated" result, open a TCP socket, retransmit
+     over TCP socket, await result
+
+3.g. If we recieve timeout alarm and/or result, end timer for measurement.
+
+3.h. close any sockets we opened.
+
+4. Generate average timing, compare against --warning and --critical
+   to determine correct exit status
+
+5. Return exit status, average timing, and sent/received counts for
+   performance data.
