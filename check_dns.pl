@@ -36,6 +36,10 @@ use Getopt::Long;
 use Socket;
 use IO::Socket;
 
+eval {
+    use Time::HiRes;
+};
+
 # nagios exit codes
 #0       OK      UP
 #1       WARNING UP or DOWN/UNREACHABLE*
@@ -51,6 +55,9 @@ my $NAGIOS_EXIT_CRITICAL = 2;
 my $NAGIOS_EXIT_UNKNOWN  = 3;
 
 my %OPTIONS = (
+    q{qtype}     => 'NS',
+    q{qname}     => '.',
+    q{resolver}  => '127.0.0.1',
     q{tries}     => 3,
     q{warning}   => 10,
     q{critical}  => 100,
@@ -60,9 +67,9 @@ my %OPTIONS = (
 
 my $print_help_sref = sub {
     print qq{Usage: $PROGRAM_NAME
-        --qtype: NS/A/TXT/MX
-        --qname: domainname to query
-     --resolver: hostname or ip.ad.re.ss
+        --qtype: NS/A/TXT/MX (Default: $OPTIONS{'qtype'})
+        --qname: domainname to query (Default: $OPTIONS{'qname'})
+     --resolver: hostname or ip.ad.re.ss (Default: $OPTIONS{'resolver'})
         --tries: queries to perform and average (Default: $OPTIONS{'tries'})
       --warning: time to return warning (Default: $OPTIONS{'warning'} msec)
      --critical: time to return critical (Default: $OPTIONS{'critical'} msec)
@@ -107,7 +114,7 @@ my $print_version_sref = sub {
 my $getopt_result = GetOptions(
     "qtype=s"     => \$OPTIONS{'qtype'},
     "qname=s"     => \$OPTIONS{'qname'},
-    "resolver=s"  => \$OPTIONS{'qname'},
+    "resolver=s"  => \$OPTIONS{'resolver'},
     "tries=i"     => \$OPTIONS{'tries'},
     "warning=f"   => \$OPTIONS{'warning'},
     "critical=f"  => \$OPTIONS{'critical'},
@@ -117,12 +124,11 @@ my $getopt_result = GetOptions(
     "help" => sub { $print_help_sref->(); exit $NAGIOS_EXIT_UNKNOWN; },
 );
 if ( not $getopt_result ) {
-    print qq{Error: Options failure\n};
     $print_help_sref->();
     exit $NAGIOS_EXIT_UNKNOWN;
 }
 
-my @TRY_TIMES = ( 5, 7, 11 );
+my @TRY_TIMES    = ();
 my $AVERAGE_TIME = 0.0;
 
 # Also the first item for performance data is average_time as a float
@@ -139,11 +145,58 @@ my %PERFDATA = map { $_ => 0 } @PERFKEYS;
 
 my $exit_message = q{};
 
-#$SIG{'ALRM'} = sub {
-#Carp::cluck(q{BIND9 plugin timed out});
-#exit $NAGIOS_EXIT_WARNING;
+my $SOURCE_IPADDR = gethostbyname( $OPTIONS{'source-ip'} );
+if ( not defined $SOURCE_IPADDR ) {
+    print qq{Error: gethostbyname(--source-ip $OPTIONS{'source-ip'}): $!\n};
+    $print_help_sref->();
+    exit $NAGIOS_EXIT_UNKNOWN;
+}
+
+my $RESOLVER_IPADDR = gethostbyname( $OPTIONS{'resolver'} );
+if ( not defined $RESOLVER_IPADDR ) {
+    print qq{Error: gethostbyname(--source-ip $OPTIONS{'resolver'}): $!\n};
+    $print_help_sref->();
+    exit $NAGIOS_EXIT_UNKNOWN;
+}
+
+my %QTYPE_MAP = (
+    q{A}   => 1,
+    q{NS}  => 2,
+    q{MX}  => 15,
+    q{TXT} => 16,
+);
+
+my $QTYPE_INT = $QTYPE_MAP{ $OPTIONS{'qtype'} };
+if ( not defined $QTYPE_INT ) {
+    print qq{Error: Unknown --qtype $OPTIONS{'qtype'}\n};
+    $print_help_sref->();
+    exit $NAGIOS_EXIT_UNKNOWN;
+}
+
+# We only have "IN" query class
+my $QCLASS_INT = 1;
+
+# Trailing header chunk, representing a query which we
+# have requested recursive resolution.
+my $QUERY_HEADER_WIRE = pack q{B16n4}, q{0} x 7 . q{1} . q{0} x 8, 0, 0, 0, 0;
+
+my $QUERY_TAIL = pack q{n2}, $QTYPE_INT, $QCLASS_INT;
+
+# epoch time in seconds plus a bit of fiddling
+my $first_id = time ^ $PID ^ $UID;
+for my $try ( 1 .. $OPTIONS{'tries'} ) {
+    my $expect_id = $first_id + $try;
+    my $query = pack q{n}, $expect_id;
+    $query .= $QUERY_HEADER_WIRE;
+    $query .= qname2wire( $OPTIONS{'qname'} );
+    $query .= $QUERY_TAIL;
+
+    #$SIG{'ALRM'} = sub {
+    #Carp::cluck(q{BIND9 plugin timed out});
+    #exit $NAGIOS_EXIT_WARNING;
 ##};
-#alarm $OPTIONS{'timeout'};
+    #alarm $OPTIONS{'timeout'};
+}
 
 my $exit_code = $NAGIOS_EXIT_OKAY;
 if ( length $exit_message ) {
@@ -160,8 +213,8 @@ $AVERAGE_TIME /= $OPTIONS{'tries'};
 
 print qq{DNS $exit_message ;};
 print qq{ AVG $AVERAGE_TIME msec;};
-print
-    qq{ $PERFDATA{'responses_recv'}/$PERFDATA{'queries_sent'} responses/queries;};
+print qq{ $PERFDATA{'responses_recv'}/$PERFDATA{'queries_sent'}};
+print q{ responses/queries;};
 print qq{ $PERFDATA{'udp_sent'}+$PERFDATA{'tcp_sent'} udp+tcp/sent;};
 print qq{ $PERFDATA{'udp_recv'}+$PERFDATA{'tcp_recv'} udp+tcp/recv;};
 print qq{ |};
@@ -177,3 +230,160 @@ for my $k (@BYTEKEYS) {
     print q{ }, $k, q{=}, $PERFDATA{$k}, q{B};
 }
 exit $exit_code;
+
+#
+# CODE OBTAINED FROM CPAN Net::DNS
+#
+sub wire2presentation {
+    my $wire         = shift;
+    my $presentation = "";
+    my $length       = length($wire);
+
+    # There must be a nice regexp to do this.. but since I failed to
+    # find one I scan the name string until I find a '\', at that time
+    # I start looking forward and do the magic.
+
+    my $i = 0;
+
+    while ( $i < $length ) {
+        my $char = unpack( "x" . $i . "C1", $wire );
+        if ( $char < 33 || $char > 126 ) {
+            $presentation .= sprintf( "\\%03u", $char );
+        }
+        elsif ( $char == ord("\"") ) {
+            $presentation .= "\\\"";
+        }
+        elsif ( $char == ord("\$") ) {
+            $presentation .= "\\\$";
+        }
+        elsif ( $char == ord("(") ) {
+            $presentation .= "\\(";
+        }
+        elsif ( $char == ord(")") ) {
+            $presentation .= "\\)";
+        }
+        elsif ( $char == ord(";") ) {
+            $presentation .= "\\;";
+        }
+        elsif ( $char == ord("@") ) {
+            $presentation .= "\\@";
+        }
+        elsif ( $char == ord("\\") ) {
+            $presentation .= "\\\\";
+        }
+        elsif ( $char == ord(".") ) {
+            $presentation .= "\\.";
+        }
+        else {
+            $presentation .= chr($char);
+        }
+        $i++;
+    }
+
+    return $presentation;
+
+}
+
+# in: $dname a string with a domain name in presentation format (1035
+# sect 5.1)
+# out: an array of labels in wire format.
+
+sub name2labels {
+    my $dname = shift;
+    my @names;
+    my $j = 0;
+    while ($dname) {
+        ( $names[$j], $dname ) = presentation2wire($dname);
+        $j++;
+    }
+
+    return @names;
+}
+
+# Will parse the input presentation format and return everything before
+# the first non-escaped "." in the first element of the return array and
+# all that has not been parsed yet in the 2nd argument.
+
+sub presentation2wire {
+    my $presentation = shift;
+    my $wire         = "";
+    my $length       = length $presentation;
+
+    my $i = 0;
+
+    while ( $i < $length ) {
+        my $char = unpack( "x" . $i . "C1", $presentation );
+        if ( $char == ord('.') ) {
+            return ( $wire, substr( $presentation, $i + 1 ) );
+        }
+        if ( $char == ord('\\') ) {
+
+            #backslash found
+            pos($presentation) = $i + 1;
+            if ( $presentation =~ /\G(\d\d\d)/ ) {
+                $wire .= pack( "C", $1 );
+                $i += 3;
+            }
+            elsif ( $presentation =~ /\Gx([0..9a..fA..F][0..9a..fA..F])/ ) {
+                $wire .= pack( "H*", $1 );
+                $i += 3;
+            }
+            elsif ( $presentation =~ /\G\./ ) {
+                $wire .= "\.";
+                $i += 1;
+            }
+            elsif ( $presentation =~ /\G@/ ) {
+                $wire .= "@";
+                $i += 1;
+            }
+            elsif ( $presentation =~ /\G\(/ ) {
+                $wire .= "(";
+                $i += 1;
+            }
+            elsif ( $presentation =~ /\G\)/ ) {
+                $wire .= ")";
+                $i += 1;
+            }
+            elsif ( $presentation =~ /\G\\/ ) {
+                $wire .= "\\";
+                $i += 1;
+            }
+        }
+        else {
+            $wire .= pack( "C", $char );
+        }
+        $i++;
+    }
+
+    return $wire;
+}
+
+#
+# CODE OBTAINED FROM CPAN Net::DNS::Packet
+# Modified to be:
+# 1. non-OO
+# 2. not do compression
+# 3. renamed from dn_comp
+
+sub qname2wire {
+    my ($name)   = @_;
+    my @names    = name2labels($name);
+    my $wirename = '';
+
+    while (@names) {
+        my $label = shift @names;
+        my $length = length $label || next;    # skip if null
+        if ( $length > 63 ) {
+
+            # Truncated if more than 63 octets
+            $length = 63;
+            $label = substr( $label, 0, $length );
+        }
+        $wirename .= pack( 'C a*', $length, $label );
+    }
+
+    $wirename .= pack( 'C', 0 ) unless @names;
+
+    return $wirename;
+}
+
