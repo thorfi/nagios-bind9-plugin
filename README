@@ -55,6 +55,11 @@ from, and expects to be given information on where to send queries to.
 Please run it with --help to see the options you are required to
 provide.
 
+Unfortunately Perl does not provide a high resolution timer by default.
+Please install the Perl module Time::HiRes somewhere that the plugin
+script can find it.  If you do not, the time measurements will be
+performed using select loops, and will be very inaccurate.
+
 The process the check_dns.pl plugin goes through is:
 
 1. Resolve IP address for --source-ip

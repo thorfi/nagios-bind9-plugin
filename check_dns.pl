@@ -36,8 +36,18 @@ use Getopt::Long;
 use Socket;
 use IO::Socket;
 
+my $have_time_hires = 0;
 eval {
     use Time::HiRes;
+    $have_time_hires = 1;
+};
+
+my $have_select_timeleft = 0;
+eval {
+    my ( $nfound, $timeleft ) = select undef, undef, undef, 0.1;
+    if ( $timeleft != 0.1 ) {
+        $have_select_timeleft = 1;
+    }
 };
 
 # nagios exit codes
@@ -55,14 +65,14 @@ my $NAGIOS_EXIT_CRITICAL = 2;
 my $NAGIOS_EXIT_UNKNOWN  = 3;
 
 my %OPTIONS = (
-    q{qtype}     => 'NS',
-    q{qname}     => '.',
-    q{resolver}  => '127.0.0.1',
+    q{qtype}     => q{NS},
+    q{qname}     => q{.},
+    q{resolver}  => q{127.0.0.1},
     q{tries}     => 3,
     q{warning}   => 10,
     q{critical}  => 100,
     q{timeout}   => 1000,
-    q{source-ip} => '0.0.0.0',
+    q{source-ip} => q{0.0.0.0},
 );
 
 my $print_help_sref = sub {
@@ -151,6 +161,7 @@ if ( not defined $SOURCE_IPADDR ) {
     $print_help_sref->();
     exit $NAGIOS_EXIT_UNKNOWN;
 }
+$OPTIONS{'source-ipaddr'} = $SOURCE_IPADDR;
 
 my $RESOLVER_IPADDR = gethostbyname( $OPTIONS{'resolver'} );
 if ( not defined $RESOLVER_IPADDR ) {
@@ -158,6 +169,7 @@ if ( not defined $RESOLVER_IPADDR ) {
     $print_help_sref->();
     exit $NAGIOS_EXIT_UNKNOWN;
 }
+$OPTIONS{'resolver-ipaddr'} = $RESOLVER_IPADDR;
 
 my %QTYPE_MAP = (
     q{A}   => 1,
@@ -177,25 +189,45 @@ if ( not defined $QTYPE_INT ) {
 my $QCLASS_INT = 1;
 
 # Trailing header chunk, representing a query which we
-# have requested recursive resolution.
-my $QUERY_HEADER_WIRE = pack q{B16n4}, q{0} x 7 . q{1} . q{0} x 8, 0, 0, 0, 0;
+# have requested recursive resolution, and saying we have one query.
+my $QUERY_HEADER_WIRE = pack q{B16n4}, q{0} x 7 . q{1} . q{0} x 8, 1, 0, 0, 0;
 
 my $QUERY_TAIL = pack q{n2}, $QTYPE_INT, $QCLASS_INT;
 
+my $send_query_sref;
+if ($have_time_hires) {
+
+    # Time::HiRes exists, do this
+    $send_query_sref = \&time_hires_sendrecv;
+}
+elsif ($have_select_timeleft) {
+
+    # Select in array context actually returns a useful $timeleft value
+    $send_query_sref = \&select_timeleft_sendrecv;
+}
+else {
+
+    # No Time::HiRes, no select timeleft, we have to rely on evil hackery with
+    # select.
+    $send_query_sref = \&select_sendrecv;
+}
+
 # epoch time in seconds plus a bit of fiddling
-my $first_id = time ^ $PID ^ $UID;
-for my $try ( 1 .. $OPTIONS{'tries'} ) {
+#my $first_id = time ^ $PID ^ $UID;
+my $first_id = 0xaaa9;
+for my $try ( 1 .. int $OPTIONS{'tries'} ) {
     my $expect_id = $first_id + $try;
     my $query = pack q{n}, $expect_id;
     $query .= $QUERY_HEADER_WIRE;
     $query .= qname2wire( $OPTIONS{'qname'} );
     $query .= $QUERY_TAIL;
 
-    #$SIG{'ALRM'} = sub {
-    #Carp::cluck(q{BIND9 plugin timed out});
-    #exit $NAGIOS_EXIT_WARNING;
-##};
-    #alarm $OPTIONS{'timeout'};
+    my ( $time_taken, $perfdata_href ) =
+        $send_query_sref->( $query, \%OPTIONS );
+    push @TRY_TIMES, $time_taken;
+    for my $k (@PERFKEYS) {
+        $PERFDATA{$k} += $perfdata_href->{$k};
+    }
 }
 
 my $exit_code = $NAGIOS_EXIT_OKAY;
@@ -230,6 +262,100 @@ for my $k (@BYTEKEYS) {
     print q{ }, $k, q{=}, $PERFDATA{$k}, q{B};
 }
 exit $exit_code;
+
+sub send_udp {
+    my ( $query, $options_href ) = @_;
+    my $proto    = getprotobyname('udp');
+    my $peer_in  = sockaddr_in( 53, $options_href->{'resolver-ipaddr'} );
+    my $local_in = sockaddr_in( 0, $options_href->{'source-ipaddr'} );
+    my $sock_obj = new IO::Socket;
+    socket $sock_obj, PF_INET, SOCK_DGRAM, $proto;
+    bind $sock_obj, $local_in or Carp::carp $!;
+    send $sock_obj, $query, 0, $peer_in or Carp::carp $!;
+    return $sock_obj;
+}
+
+sub send_tcp {
+    my ( $query, $options_href ) = @_;
+    my $proto    = getprotobyname('tcp');
+    my $peer_in  = sockaddr_in( 53, $options_href->{'resolver-ipaddr'} );
+    my $local_in = sockaddr_in( 0, $options_href->{'source-ipaddr'} );
+    my $sock_obj = new IO::Handle;
+    socket $sock_obj, PF_INET, SOCK_STREAM, $proto;
+    bind $sock_obj, $local_in or Carp::carp $!;
+    connect $sock_obj, $peer_in or Carp::carp $!;
+    my $tcp_msg = pack q{n}, length $query;
+    $tcp_msg .= $query;
+    my $idx = 0;
+    my $len = length $tcp_msg;
+
+    while ( $idx < $len ) {
+        $idx += send $sock_obj, $tcp_msg, 0, $peer_in or Carp::carp $!;
+    }
+    return $sock_obj;
+}
+
+sub tcp_sysread {
+    my ( $sock_obj, $expect_octets ) = @_;
+    my $buf    = '';
+    my $bufidx = 0;
+    while ( $bufidx < $expect_octets ) {
+        my $retval = sysread $sock_obj, $buf, ( $expect_octets - $bufidx ),
+            $bufidx;
+        if ( not defined $retval ) {
+            last;
+        }
+        $bufidx += $retval;
+    }
+    return $buf;
+}
+
+sub time_hires_sendrecv {
+    my ( $query, $options_href ) = @_;
+    my $timed_out  = 0;
+    my $start_time = Time::HiRes::time();
+    my %perfdata   = map { $_ => 0, } @PERFKEYS;
+    $SIG{'ALRM'} = sub {
+        $timed_out = 1;
+    };
+    Time::HiRes::alarm( $options_href->{'timeout'} / 1000.0 );
+    my $sock_obj = send_udp( $query, $options_href );
+    $perfdata{'queries_sent'} += 1;
+    $perfdata{'udp_sent'} += length $query;
+    my $response = '';
+    if ( not recv $sock_obj, $response, 10240, 0 ) {
+        if ( not $timed_out ) {
+            Carp::carp $1;
+        }
+    }
+    close $sock_obj;
+    if ( not $timed_out ) {
+        $perfdata{'responses_recv'} += 1;
+        $perfdata{'udp_recv'} += length $response;
+
+        # FIXME: unpack the response header and check if it is truncated
+
+        $sock_obj = send_tcp( $query, $options_href );
+        $perfdata{'queries_sent'} += 1;
+        $perfdata{'tcp_sent'} += length $query;
+        $response = '';
+        my $chunk = tcp_sysread( $sock_obj, 2 );
+        if ( not $timed_out ) {
+            my $resp_length = unpack q{n}, $chunk;
+            my $response = tcp_sysread( $sock_obj, $resp_length );
+            if ( not $timed_out ) {
+                $perfdata{'responses_recv'} += 1;
+                $perfdata{'tcp_recv'} += length $response;
+            }
+        }
+        close $sock_obj;
+    }
+
+    my $end_time   = Time::HiRes::time();
+    my $time_taken = ( $end_time - $start_time ) * 1000;
+
+    return ( $time_taken, \%perfdata );
+}
 
 #
 # CODE OBTAINED FROM CPAN Net::DNS
