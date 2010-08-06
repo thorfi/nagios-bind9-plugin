@@ -70,23 +70,26 @@ The process the check_dns.pl plugin goes through is:
 
 3.a. Form a query packet using --qname --qtype
 
-3.b. Start timer, set up timeout alarm
+3.b. Start timer, set up --timeout alarm
 
-3.c. Open a UDP socket from --source-ip to --resolver:53, 
+3.c. if --protocol is udp or tcpfallback
 
-3.d. Transmit query packet over the UDP socket
+3.c.i. open a UDP socket bound to --source-ip (random port)
+3.c.ii. Transmit query packet from the UDP socket to --resolver:53
+3.c.iii. Await result
 
-3.e. Await result
+3.d. if --protocol is tcp or (tcpfallback and a truncated udp response occurred)
+3.d.i. open a TCP socket bound to --source-ip (random port)
+3.d.ii. connect TCP socket to --resolver:53
+3.d.iii. Transmit query packet
+3.d.iv. Await result
 
-3.f. If we receive a "truncated" result, open a TCP socket, retransmit
-     over TCP socket, await result
+3.e. Once we recieve timeout alarm and/or result, end timer and store
+     measurement.
 
-3.g. If we recieve timeout alarm and/or result, end timer for measurement.
+4. Generate average time, compare against --warning and --critical
+   to determine correct exit status.
 
-3.h. close any sockets we opened.
+5. Return exit status, average timing in milliseconds, and udp/tcp
+   sent/received bytes and counts as performance data.
 
-4. Generate average timing, compare against --warning and --critical
-   to determine correct exit status
-
-5. Return exit status, average timing, and sent/received counts for
-   performance data.
