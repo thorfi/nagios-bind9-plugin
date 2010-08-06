@@ -1,4 +1,4 @@
-#!/usr/bin/perl 
+#!/usr/bin/perl
 #
 # Nagios DNS Monitoring Plugin
 #
@@ -68,16 +68,17 @@ my %OPTIONS = (
     q{qtype}     => q{NS},
     q{qname}     => q{.},
     q{resolver}  => q{127.0.0.1},
-    q{tries}     => 3,
+    q{tries}     => 5,
     q{warning}   => 10,
     q{critical}  => 100,
     q{timeout}   => 1000,
     q{source-ip} => q{0.0.0.0},
+    q{protocol}  => q{tcpfallback},
 );
 
 my $print_help_sref = sub {
     print qq{Usage: $PROGRAM_NAME
-        --qtype: NS/A/TXT/MX (Default: $OPTIONS{'qtype'})
+        --qtype: NS/A/TXT/MX/ANY/... (Default: $OPTIONS{'qtype'})
         --qname: domainname to query (Default: $OPTIONS{'qname'})
      --resolver: hostname or ip.ad.re.ss (Default: $OPTIONS{'resolver'})
         --tries: queries to perform and average (Default: $OPTIONS{'tries'})
@@ -85,6 +86,7 @@ my $print_help_sref = sub {
      --critical: time to return critical (Default: $OPTIONS{'critical'} msec)
       --timeout: timeout (Default: $OPTIONS{'timeout'} msec)
     --source-ip: address to send queries from (Default: $OPTIONS{'source-ip'})
+     --protocol: udp/tcp/tcpfallback (Default: $OPTIONS{'protocol'})
       --version: print version and exit
          --help: print this help and exit
 
@@ -130,6 +132,7 @@ my $getopt_result = GetOptions(
     "critical=f"  => \$OPTIONS{'critical'},
     "timeout=f"   => \$OPTIONS{'timeout'},
     "source-ip=s" => \$OPTIONS{'source-ip'},
+    "protocol=s"  => \$OPTIONS{'protocol'},
     "version" => sub { $print_version_sref->(); exit $NAGIOS_EXIT_UNKNOWN; },
     "help" => sub { $print_help_sref->(); exit $NAGIOS_EXIT_UNKNOWN; },
 );
@@ -138,13 +141,19 @@ if ( not $getopt_result ) {
     exit $NAGIOS_EXIT_UNKNOWN;
 }
 
-my @TRY_TIMES    = ();
-my $AVERAGE_TIME = 0.0;
+if ( $OPTIONS{'protocol'} !~ m/^(udp|tcp|tcpfallback)$/ ) {
+    print qq{Error: --protocol $OPTIONS{'protocol'} unknown\n};
+    $print_help_sref->();
+    exit $NAGIOS_EXIT_UNKNOWN;
+}
+
+my @TRY_TIMES = ();
 
 # Also the first item for performance data is average_time as a float
 # these are all integers
 my @NUMKEYS = qw(
-    queries_sent responses_recv
+    udp_queries udp_responses
+    tcp_queries tcp_responses
 );
 my @BYTEKEYS = qw(
     udp_sent tcp_sent
@@ -153,7 +162,7 @@ my @BYTEKEYS = qw(
 my @PERFKEYS = ( @NUMKEYS, @BYTEKEYS );
 my %PERFDATA = map { $_ => 0 } @PERFKEYS;
 
-my $exit_message = q{};
+$PERFDATA{'error_message'} = q{};
 
 my $SOURCE_IPADDR = gethostbyname( $OPTIONS{'source-ip'} );
 if ( not defined $SOURCE_IPADDR ) {
@@ -171,14 +180,86 @@ if ( not defined $RESOLVER_IPADDR ) {
 }
 $OPTIONS{'resolver-ipaddr'} = $RESOLVER_IPADDR;
 
+# MAP data OBTAINED FROM CPAN Net::DNS
 my %QTYPE_MAP = (
-    q{A}   => 1,
-    q{NS}  => 2,
-    q{MX}  => 15,
-    q{TXT} => 16,
+    'SIGZERO'    => 0,     # RFC2931 consider this a pseudo type
+    'A'          => 1,     # RFC 1035, Section 3.4.1
+    'NS'         => 2,     # RFC 1035, Section 3.3.11
+    'MD'         => 3,     # RFC 1035, Section 3.3.4 (obsolete)
+    'MF'         => 4,     # RFC 1035, Section 3.3.5 (obsolete)
+    'CNAME'      => 5,     # RFC 1035, Section 3.3.1
+    'SOA'        => 6,     # RFC 1035, Section 3.3.13
+    'MB'         => 7,     # RFC 1035, Section 3.3.3
+    'MG'         => 8,     # RFC 1035, Section 3.3.6
+    'MR'         => 9,     # RFC 1035, Section 3.3.8
+    'NULL'       => 10,    # RFC 1035, Section 3.3.10
+    'WKS'        => 11,    # RFC 1035, Section 3.4.2 (deprecated)
+    'PTR'        => 12,    # RFC 1035, Section 3.3.12
+    'HINFO'      => 13,    # RFC 1035, Section 3.3.2
+    'MINFO'      => 14,    # RFC 1035, Section 3.3.7
+    'MX'         => 15,    # RFC 1035, Section 3.3.9
+    'TXT'        => 16,    # RFC 1035, Section 3.3.14
+    'RP'         => 17,    # RFC 1183, Section 2.2
+    'AFSDB'      => 18,    # RFC 1183, Section 1
+    'X25'        => 19,    # RFC 1183, Section 3.1
+    'ISDN'       => 20,    # RFC 1183, Section 3.2
+    'RT'         => 21,    # RFC 1183, Section 3.3
+    'NSAP'       => 22,    # RFC 1706, Section 5
+    'NSAP_PTR'   => 23,    # RFC 1348 (obsolete by RFC 1637)
+    'SIG'        => 24,    # RFC 2535, Section 4.1 impemented in Net::DNS::SEC
+    'KEY'        => 25,    # RFC 2535, Section 3.1 impemented in Net::DNS::SEC
+    'PX'         => 26,    # RFC 2163,
+    'GPOS'       => 27,    # RFC 1712 (obsolete ?)
+    'AAAA'       => 28,    # RFC 1886, Section 2.1
+    'LOC'        => 29,    # RFC 1876
+    'NXT'        => 30,    # RFC 2535, Section 5.2 obsoleted by RFC3755
+    'EID'        => 31,    # draft-ietf-nimrod-dns-xx.txt
+    'NIMLOC'     => 32,    # draft-ietf-nimrod-dns-xx.txt
+    'SRV'        => 33,    # RFC 2052
+    'ATMA'       => 34,    # non-standard
+    'NAPTR'      => 35,    # RFC 2168
+    'KX'         => 36,    # RFC 2230
+    'CERT'       => 37,    # RFC 2538
+    'A6'         => 38,    # RFC3226, RFC2874. See RFC 3363 made A6 exp.
+    'DNAME'      => 39,    # RFC 2672
+    'SINK'       => 40,    # non-standard
+    'OPT'        => 41,    # RFC 2671
+    'APL'        => 42,    # RFC 3123
+    'DS'         => 43,    # RFC 4034
+    'SSHFP'      => 44,    # RFC 4255
+    'IPSECKEY'   => 45,    # RFC 4025
+    'RRSIG'      => 46,    # RFC 4034
+    'NSEC'       => 47,    # RFC 4034
+    'DNSKEY'     => 48,    # RFC 4034
+    'DHCID'      => 49,    # RFC4701
+    'NSEC3'      => 50,    # RFC5155
+    'NSEC3PARAM' => 51,    # RFC5155
+
+    # 52-54 are unassigned
+    'HIP'   => 55,         # RFC5205
+    'NINFO' => 56,         # non-standard
+    'RKEY'  => 57,         # non-standard
+
+    # 58-98 are unassigned
+    'SPF'    => 99,        # RFC 4408
+    'UINFO'  => 100,       # non-standard
+    'UID'    => 101,       # non-standard
+    'GID'    => 102,       # non-standard
+    'UNSPEC' => 103,       # non-standard
+
+    # 104-248 are unassigned
+    'TKEY'  => 249,        # RFC 2930
+    'TSIG'  => 250,        # RFC 2931
+    'IXFR'  => 251,        # RFC 1995
+    'AXFR'  => 252,        # RFC 1035
+    'MAILB' => 253,        # RFC 1035 (MB, MG, MR)
+    'MAILA' => 254,        # RFC 1035 (obsolete - see MX)
+    'ANY'   => 255,        # RFC 1035
+    'TA'    => 32768,      # non-standard
+    'DLV'   => 32769,      # RFC 4431
 );
 
-my $QTYPE_INT = $QTYPE_MAP{ $OPTIONS{'qtype'} };
+my $QTYPE_INT = $QTYPE_MAP{ uc $OPTIONS{'qtype'} };
 if ( not defined $QTYPE_INT ) {
     print qq{Error: Unknown --qtype $OPTIONS{'qtype'}\n};
     $print_help_sref->();
@@ -216,14 +297,14 @@ else {
 #my $first_id = time ^ $PID ^ $UID;
 my $first_id = 0xaaa9;
 for my $try ( 1 .. int $OPTIONS{'tries'} ) {
-    my $expect_id = $first_id + $try;
-    my $query = pack q{n}, $expect_id;
+    my $query_id = $first_id + $try;
+    my $query = pack q{n}, $query_id;
     $query .= $QUERY_HEADER_WIRE;
     $query .= qname2wire( $OPTIONS{'qname'} );
     $query .= $QUERY_TAIL;
 
     my ( $time_taken, $perfdata_href ) =
-        $send_query_sref->( $query, \%OPTIONS );
+        $send_query_sref->( $query, $query_id, \%OPTIONS );
     push @TRY_TIMES, $time_taken;
     for my $k (@PERFKEYS) {
         $PERFDATA{$k} += $perfdata_href->{$k};
@@ -231,30 +312,55 @@ for my $try ( 1 .. int $OPTIONS{'tries'} ) {
 }
 
 my $exit_code = $NAGIOS_EXIT_OKAY;
-if ( length $exit_message ) {
+if ( length $PERFDATA{'error_message'} ) {
+
+    # Already got a warning
     $exit_code = $NAGIOS_EXIT_WARNING;
 }
-else {
-    $exit_message = 'OKAY';
-}
-
+my $average_msec = 0.0;
 for my $try_time (@TRY_TIMES) {
-    $AVERAGE_TIME += $try_time;
+    $average_msec += $try_time;
 }
-$AVERAGE_TIME /= $OPTIONS{'tries'};
+$average_msec /= $OPTIONS{'tries'};
 
-print qq{DNS $exit_message ;};
-print qq{ AVG $AVERAGE_TIME msec;};
-print qq{ $PERFDATA{'responses_recv'}/$PERFDATA{'queries_sent'}};
-print q{ responses/queries;};
-print qq{ $PERFDATA{'udp_sent'}+$PERFDATA{'tcp_sent'} udp+tcp/sent;};
-print qq{ $PERFDATA{'udp_recv'}+$PERFDATA{'tcp_recv'} udp+tcp/recv;};
+if ( $average_msec > $OPTIONS{'critical'} ) {
+    $PERFDATA{'error_message'}
+        .= qq{CRITICAL AVG > $OPTIONS{'critical'}msec\n};
+    $exit_code = $NAGIOS_EXIT_CRITICAL;
+}
+elsif ( $average_msec > $OPTIONS{'warning'} ) {
+    $PERFDATA{'error_message'} .= qq{WARNING AVG > $OPTIONS{'warning'}msec\n};
+    $exit_code = $NAGIOS_EXIT_WARNING;
+}
+
+if ( length $PERFDATA{'error_message'} < 1 ) {
+    $PERFDATA{'error_message'} = 'OKAY';
+}
+else {
+    chomp $PERFDATA{'error_message'};
+    $PERFDATA{'error_message'} =~ s/\n/,/g;
+    $PERFDATA{'error_message'} =~ s/\s+/ /g;
+}
+
+print qq{DNS $PERFDATA{'error_message'};};
+printf q{ AVG %.3f }, $average_msec;
+if ($have_time_hires) {
+    print qq{msec;};
+}
+else {
+    print qq{msec (INACCURATE - No Time::HiRes);};
+}
+print qq{ $PERFDATA{'udp_responses'}+$PERFDATA{'tcp_responses'}};
+print qq{/$PERFDATA{'udp_queries'}+$PERFDATA{'tcp_queries'}};
+print q{ udp+tcp responses/queries;};
+print qq{ $PERFDATA{'udp_sent'}b+$PERFDATA{'tcp_sent'}b udp+tcp/sent;};
+print qq{ $PERFDATA{'udp_recv'}b+$PERFDATA{'tcp_recv'}b udp+tcp/recv;};
 print qq{ |};
 
 # Generate perfdata in PNP4Nagios format
 # http://docs.pnp4nagios.org/pnp-0.6/perfdata_format
 
-print q{ average_time=}, $AVERAGE_TIME, q{ms};
+printf q{ average_time=%.3fms }, $average_msec;
 for my $k (@NUMKEYS) {
     print q{ }, $k, q{=}, $PERFDATA{$k};
 }
@@ -263,34 +369,38 @@ for my $k (@BYTEKEYS) {
 }
 exit $exit_code;
 
-sub send_udp {
+sub udp_send {
     my ( $query, $options_href ) = @_;
-    my $proto    = getprotobyname('udp');
+    my $proto = getprotobyname('udp') or return undef;
     my $peer_in  = sockaddr_in( 53, $options_href->{'resolver-ipaddr'} );
-    my $local_in = sockaddr_in( 0, $options_href->{'source-ipaddr'} );
+    my $local_in = sockaddr_in( 0,  $options_href->{'source-ipaddr'} );
     my $sock_obj = new IO::Socket;
-    socket $sock_obj, PF_INET, SOCK_DGRAM, $proto;
-    bind $sock_obj, $local_in or Carp::carp $!;
-    send $sock_obj, $query, 0, $peer_in or Carp::carp $!;
+    socket $sock_obj, PF_INET, SOCK_DGRAM, $proto or return undef;
+    bind $sock_obj, $local_in or return undef;
+    send $sock_obj, $query, 0, $peer_in or return undef;
     return $sock_obj;
 }
 
-sub send_tcp {
+sub tcp_send {
     my ( $query, $options_href ) = @_;
-    my $proto    = getprotobyname('tcp');
+    my $proto = getprotobyname('tcp') or return undef;
     my $peer_in  = sockaddr_in( 53, $options_href->{'resolver-ipaddr'} );
-    my $local_in = sockaddr_in( 0, $options_href->{'source-ipaddr'} );
-    my $sock_obj = new IO::Handle;
-    socket $sock_obj, PF_INET, SOCK_STREAM, $proto;
-    bind $sock_obj, $local_in or Carp::carp $!;
-    connect $sock_obj, $peer_in or Carp::carp $!;
+    my $local_in = sockaddr_in( 0,  $options_href->{'source-ipaddr'} );
+    my $sock_obj = new IO::Socket;
+    socket $sock_obj, PF_INET, SOCK_STREAM, $proto or return undef;
+    bind $sock_obj, $local_in or return undef;
+    connect $sock_obj, $peer_in or return undef;
     my $tcp_msg = pack q{n}, length $query;
     $tcp_msg .= $query;
     my $idx = 0;
     my $len = length $tcp_msg;
 
     while ( $idx < $len ) {
-        $idx += send $sock_obj, $tcp_msg, 0, $peer_in or Carp::carp $!;
+        my $result = send $sock_obj, $tcp_msg, 0, $peer_in;
+        if ( not defined $result ) {
+            return undef;
+        }
+        $idx += $result;
     }
     return $sock_obj;
 }
@@ -310,51 +420,116 @@ sub tcp_sysread {
     return $buf;
 }
 
+sub unpack_header {
+    my ($dns_packet) = @_;
+
+    #print map {' ' . unpack 'b8', $_} split '', $dns_packet;
+    my @r_keys = qw(id bitfield qdcount adcount nscount arcount);
+    my @r_values = unpack q{nB16nnnn}, $dns_packet;
+    if ( int @r_values != int @r_keys ) {
+        return undef;
+    }
+    my %r_data;
+    @r_data{@r_keys} = @r_values;
+    my $bitfield = $r_data{'bitfield'};
+    $r_data{'qr'}     = substr $bitfield, 0,  1;
+    $r_data{'opcode'} = substr $bitfield, 1,  4;
+    $r_data{'aa'}     = substr $bitfield, 5,  1;
+    $r_data{'tc'}     = substr $bitfield, 6,  1;
+    $r_data{'rd'}     = substr $bitfield, 7,  1;
+    $r_data{'ra'}     = substr $bitfield, 8,  1;
+    $r_data{'z'}      = substr $bitfield, 9,  3;
+    $r_data{'rcode'}  = substr $bitfield, 12, 4;
+    return \%r_data;
+}
+
 sub time_hires_sendrecv {
-    my ( $query, $options_href ) = @_;
-    my $timed_out  = 0;
+    my ( $query, $query_id, $options_href ) = @_;
+    my %perfdata = map { $_ => 0, } @PERFKEYS;
+    $perfdata{'timed_out'}     = 0;
+    $perfdata{'error_message'} = '';
+
     my $start_time = Time::HiRes::time();
-    my %perfdata   = map { $_ => 0, } @PERFKEYS;
     $SIG{'ALRM'} = sub {
-        $timed_out = 1;
+        $perfdata{'timed_out'} = 1;
     };
     Time::HiRes::alarm( $options_href->{'timeout'} / 1000.0 );
-    my $sock_obj = send_udp( $query, $options_href );
-    $perfdata{'queries_sent'} += 1;
-    $perfdata{'udp_sent'} += length $query;
-    my $response = '';
-    if ( not recv $sock_obj, $response, 10240, 0 ) {
-        if ( not $timed_out ) {
-            Carp::carp $1;
-        }
-    }
-    close $sock_obj;
-    if ( not $timed_out ) {
-        $perfdata{'responses_recv'} += 1;
-        $perfdata{'udp_recv'} += length $response;
 
-        # FIXME: unpack the response header and check if it is truncated
-
-        $sock_obj = send_tcp( $query, $options_href );
-        $perfdata{'queries_sent'} += 1;
-        $perfdata{'tcp_sent'} += length $query;
-        $response = '';
-        my $chunk = tcp_sysread( $sock_obj, 2 );
-        if ( not $timed_out ) {
-            my $resp_length = unpack q{n}, $chunk;
-            my $response = tcp_sysread( $sock_obj, $resp_length );
-            if ( not $timed_out ) {
-                $perfdata{'responses_recv'} += 1;
-                $perfdata{'tcp_recv'} += length $response;
-            }
-        }
-        close $sock_obj;
-    }
+    time_hires_sendrecv_( \%perfdata, $query, $query_id, $options_href );
 
     my $end_time   = Time::HiRes::time();
     my $time_taken = ( $end_time - $start_time ) * 1000;
 
     return ( $time_taken, \%perfdata );
+}
+
+sub time_hires_sendrecv_ {
+    my ( $perfdata_href, $query, $query_id, $options_href ) = @_;
+
+    if ( $options_href->{'protocol'} ne q{tcp} ) {
+
+        # protocol is udp or tcpfallback
+        my $sock_obj = udp_send( $query, $options_href );
+        if ( not defined $sock_obj ) {
+            $perfdata_href->{'error_message'} .= qq{udp_send $!\n};
+            return;
+        }
+        $perfdata_href->{'udp_queries'} += 1;
+        $perfdata_href->{'udp_sent'} += length $query;
+        my $response = '';
+        if ( not defined recv $sock_obj, $response, 65535, 0 ) {
+            if ( not $perfdata_href->{'timed_out'} ) {
+                $perfdata_href->{'error_message'} .= qq{udp_recv $!\n};
+            }
+            return;
+        }
+        close $sock_obj;
+
+        my $r_data_href = unpack_header($response);
+        if ( $r_data_href->{'id'} != $query_id ) {
+            $perfdata_href->{'error_message'}
+                .= qq{udp_recv bad response id\n};
+            return;
+        }
+
+        $perfdata_href->{'udp_responses'} += 1;
+        $perfdata_href->{'udp_recv'} += length $response;
+
+        if (   ( $options_href->{'protocol'} eq 'udp' )
+            or ( not $r_data_href->{'tc'} ) )
+        {
+
+            # protocol udp only
+            # or tcpfallback and the packet is not truncated
+            # so our work is done
+            return;
+        }
+    }
+
+    # protocol is tcp or tcpfallback
+    #
+    my $sock_obj = tcp_send( $query, $options_href );
+
+    $perfdata_href->{'tcp_queries'} += 1;
+    $perfdata_href->{'tcp_sent'} += length $query;
+    my $chunk = tcp_sysread( $sock_obj, 2 );
+    if ( $perfdata_href->{'timed_out'} ) {
+        return;
+    }
+    my $resp_length = unpack q{n}, $chunk;
+    my $response = tcp_sysread( $sock_obj, $resp_length );
+    if ( $perfdata_href->{'timed_out'} ) {
+        return;
+    }
+    my $r_data_href = unpack_header($response);
+    if ( $r_data_href->{'id'} != $query_id ) {
+        $perfdata_href->{'error_message'}
+            .= qq{tcp_sysread bad response id\n};
+        return;
+    }
+    $perfdata_href->{'tcp_responses'} += 1;
+    $perfdata_href->{'tcp_recv'} += length $response;
+    close $sock_obj;
 }
 
 #
