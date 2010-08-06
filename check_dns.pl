@@ -343,12 +343,15 @@ else {
 }
 
 print qq{DNS $PERFDATA{'error_message'};};
-printf q{ AVG %.3f }, $average_msec;
+printf q{ AVG %.3f msec}, $average_msec;
 if ($have_time_hires) {
-    print qq{msec;};
+    print qq{;};
+}
+elsif ($have_select_timeleft) {
+    print qq{ (INACCURATE - No Time::HiRes);};
 }
 else {
-    print qq{msec (INACCURATE - No Time::HiRes);};
+    print qq{ (WILDLY INACCURATE - No select() timeleft or Time::HiRes);};
 }
 print qq{ $PERFDATA{'udp_responses'}+$PERFDATA{'tcp_responses'}};
 print qq{/$PERFDATA{'udp_queries'}+$PERFDATA{'tcp_queries'}};
@@ -367,6 +370,8 @@ for my $k (@NUMKEYS) {
 for my $k (@BYTEKEYS) {
     print q{ }, $k, q{=}, $PERFDATA{$k}, q{B};
 }
+print q{ have_time_hires=}, $have_time_hires;
+print q{ have_select_timeleft=}, $have_select_timeleft;
 exit $exit_code;
 
 sub udp_send {
