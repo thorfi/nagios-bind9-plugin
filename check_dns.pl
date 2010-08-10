@@ -370,7 +370,7 @@ for my $k (@NUMKEYS) {
 for my $k (@BYTEKEYS) {
     print q{ }, $k, q{=}, $PERFDATA{$k}, q{B};
 }
-print q{ have_time_hires=}, $have_time_hires;
+print q{ have_time_hires=}, $OPTIONS{'timehires'};
 exit $exit_code;
 
 sub udp_socket {
