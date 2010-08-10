@@ -46,7 +46,6 @@ use IO::File;
 # 1 will result in a host state of DOWN or UNREACHABLE. Otherwise return codes
 # of 1 will result in a host state of UP.
 my $NAGIOS_EXIT_OK       = 0;
-my $NAGIOS_EXIT_OKAY     = $NAGIOS_EXIT_OK;
 my $NAGIOS_EXIT_WARNING  = 1;
 my $NAGIOS_EXIT_CRITICAL = 2;
 my $NAGIOS_EXIT_UNKNOWN  = 3;
@@ -380,7 +379,7 @@ if ( not $found_status_data ) {
     $exit_message .= q{ status'.};
 }
 
-my $exit_code = $NAGIOS_EXIT_OKAY;
+my $exit_code = $NAGIOS_EXIT_OK;
 if ( length $exit_message > 0 ) {
     $exit_code = $NAGIOS_EXIT_WARNING;
     $exit_message =~ s/[\r\n]/ /g;

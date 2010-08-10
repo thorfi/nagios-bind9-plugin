@@ -53,7 +53,6 @@ eval {
 # 1 will result in a host state of DOWN or UNREACHABLE. Otherwise return codes
 # of 1 will result in a host state of UP.
 my $NAGIOS_EXIT_OK       = 0;
-my $NAGIOS_EXIT_OKAY     = $NAGIOS_EXIT_OK;
 my $NAGIOS_EXIT_WARNING  = 1;
 my $NAGIOS_EXIT_CRITICAL = 2;
 my $NAGIOS_EXIT_UNKNOWN  = 3;
@@ -314,7 +313,7 @@ for my $try ( 1 .. int $OPTIONS{'tries'} ) {
     }
 }
 
-my $exit_code = $NAGIOS_EXIT_OKAY;
+my $exit_code = $NAGIOS_EXIT_OK;
 if ( length $PERFDATA{'error_message'} ) {
 
     # Already got a warning
@@ -337,7 +336,7 @@ elsif ( $average_msec > $OPTIONS{'warning'} ) {
 }
 
 if ( length $PERFDATA{'error_message'} < 1 ) {
-    $PERFDATA{'error_message'} = 'OKAY';
+    $PERFDATA{'error_message'} = 'OK';
 }
 else {
     chomp $PERFDATA{'error_message'};
