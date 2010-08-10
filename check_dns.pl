@@ -35,19 +35,13 @@ use English;
 use Getopt::Long;
 use Socket;
 use IO::Socket;
+use IO::Select;
+use POSIX ();
 
 my $have_time_hires = 0;
 eval {
     use Time::HiRes;
     $have_time_hires = 1;
-};
-
-my $have_select_timeleft = 0;
-eval {
-    my ( $nfound, $timeleft ) = select undef, undef, undef, 0.1;
-    if ( $timeleft != 0.1 ) {
-        $have_select_timeleft = 1;
-    }
 };
 
 # nagios exit codes
@@ -74,6 +68,8 @@ my %OPTIONS = (
     q{timeout}   => 1000,
     q{source-ip} => q{0.0.0.0},
     q{protocol}  => q{tcpfallback},
+    q{select}    => 1 / 1_000.0,
+    q{timehires} => $have_time_hires,
 );
 
 my $print_help_sref = sub {
@@ -86,7 +82,8 @@ my $print_help_sref = sub {
      --critical: time to return critical (Default: $OPTIONS{'critical'} msec)
       --timeout: timeout (Default: $OPTIONS{'timeout'} msec)
     --source-ip: address to send queries from (Default: $OPTIONS{'source-ip'})
-     --protocol: udp/tcp/tcpfallback (Default: $OPTIONS{'protocol'})
+     --protocol: both/udp/tcp/tcpfallback (Default: $OPTIONS{'protocol'})
+       --select: time to wait for select tries (Default: $OPTIONS{'select'} sec)
       --version: print version and exit
          --help: print this help and exit
 
@@ -111,6 +108,10 @@ Total UDP Sent Size, Total TCP Sent Size,
 Total UDP Received Size, Total TCP Received Size
 are also returned as performance data.
 
+Note: If the script cannot use Time::HiRes it will use select() to do
+timing. --select is used as the granularity of the timer. Timing may be 
+wildly inaccurate if select() is unable to return that quickly.
+
 $COPYRIGHT
 $VERSION
 $AUTHOR
@@ -133,6 +134,7 @@ my $getopt_result = GetOptions(
     "timeout=f"   => \$OPTIONS{'timeout'},
     "source-ip=s" => \$OPTIONS{'source-ip'},
     "protocol=s"  => \$OPTIONS{'protocol'},
+    "timehires!"  => \$OPTIONS{'timehires'},
     "version" => sub { $print_version_sref->(); exit $NAGIOS_EXIT_UNKNOWN; },
     "help" => sub { $print_help_sref->(); exit $NAGIOS_EXIT_UNKNOWN; },
 );
@@ -141,7 +143,7 @@ if ( not $getopt_result ) {
     exit $NAGIOS_EXIT_UNKNOWN;
 }
 
-if ( $OPTIONS{'protocol'} !~ m/^(udp|tcp|tcpfallback)$/ ) {
+if ( $OPTIONS{'protocol'} !~ m/^(udp|tcp|both|tcpfallback)$/ ) {
     print qq{Error: --protocol $OPTIONS{'protocol'} unknown\n};
     $print_help_sref->();
     exit $NAGIOS_EXIT_UNKNOWN;
@@ -166,7 +168,8 @@ $PERFDATA{'error_message'} = q{};
 
 my $SOURCE_IPADDR = gethostbyname( $OPTIONS{'source-ip'} );
 if ( not defined $SOURCE_IPADDR ) {
-    print qq{Error: gethostbyname(--source-ip $OPTIONS{'source-ip'}): $!\n};
+    print
+        qq{Error: gethostbyname(--source-ip $OPTIONS{'source-ip'}): $ERRNO\n};
     $print_help_sref->();
     exit $NAGIOS_EXIT_UNKNOWN;
 }
@@ -174,7 +177,8 @@ $OPTIONS{'source-ipaddr'} = $SOURCE_IPADDR;
 
 my $RESOLVER_IPADDR = gethostbyname( $OPTIONS{'resolver'} );
 if ( not defined $RESOLVER_IPADDR ) {
-    print qq{Error: gethostbyname(--source-ip $OPTIONS{'resolver'}): $!\n};
+    print
+        qq{Error: gethostbyname(--source-ip $OPTIONS{'resolver'}): $ERRNO\n};
     $print_help_sref->();
     exit $NAGIOS_EXIT_UNKNOWN;
 }
@@ -276,21 +280,15 @@ my $QUERY_HEADER_WIRE = pack q{B16n4}, q{0} x 7 . q{1} . q{0} x 8, 1, 0, 0, 0;
 my $QUERY_TAIL = pack q{n2}, $QTYPE_INT, $QCLASS_INT;
 
 my $send_query_sref;
-if ($have_time_hires) {
+if ( $OPTIONS{'timehires'} ) {
 
     # Time::HiRes exists, do this
-    $send_query_sref = \&time_hires_sendrecv;
-}
-elsif ($have_select_timeleft) {
-
-    # Select in array context actually returns a useful $timeleft value
-    $send_query_sref = \&select_timeleft_sendrecv;
+    $send_query_sref = \&sendrecv_time_hires;
 }
 else {
 
-    # No Time::HiRes, no select timeleft, we have to rely on evil hackery with
-    # select.
-    $send_query_sref = \&select_sendrecv;
+    # No Time::HiRes, we have to rely on evil hackery with select.
+    $send_query_sref = \&sendrecv_select;
 }
 
 # epoch time in seconds plus a bit of fiddling
@@ -303,9 +301,14 @@ for my $try ( 1 .. int $OPTIONS{'tries'} ) {
     $query .= qname2wire( $OPTIONS{'qname'} );
     $query .= $QUERY_TAIL;
 
-    my ( $time_taken, $perfdata_href ) =
+    my $start_time = Time::HiRes::time();
+    my ( $msec_taken, $perfdata_href ) =
         $send_query_sref->( $query, $query_id, \%OPTIONS );
-    push @TRY_TIMES, $time_taken;
+    my $end_time = Time::HiRes::time();
+    my $hires_tt = $end_time - $start_time;
+
+    #print "ZZZ $msec_taken $hires_tt\n";
+    push @TRY_TIMES, $msec_taken;
     for my $k (@PERFKEYS) {
         $PERFDATA{$k} += $perfdata_href->{$k};
     }
@@ -347,11 +350,8 @@ printf q{ AVG %.3f msec}, $average_msec;
 if ($have_time_hires) {
     print qq{;};
 }
-elsif ($have_select_timeleft) {
-    print qq{ (INACCURATE - No Time::HiRes);};
-}
 else {
-    print qq{ (WILDLY INACCURATE - No select() timeleft or Time::HiRes);};
+    print qq{ (INACCURATE - No Time::HiRes);};
 }
 print qq{ $PERFDATA{'udp_responses'}+$PERFDATA{'tcp_responses'}};
 print qq{/$PERFDATA{'udp_queries'}+$PERFDATA{'tcp_queries'}};
@@ -371,29 +371,43 @@ for my $k (@BYTEKEYS) {
     print q{ }, $k, q{=}, $PERFDATA{$k}, q{B};
 }
 print q{ have_time_hires=}, $have_time_hires;
-print q{ have_select_timeleft=}, $have_select_timeleft;
 exit $exit_code;
 
-sub udp_send {
-    my ( $query, $options_href ) = @_;
+sub udp_socket {
+    my ($options_href) = @_;
     my $proto = getprotobyname('udp') or return undef;
-    my $peer_in  = sockaddr_in( 53, $options_href->{'resolver-ipaddr'} );
-    my $local_in = sockaddr_in( 0,  $options_href->{'source-ipaddr'} );
+    my $local_in = sockaddr_in( 0, $options_href->{'source-ipaddr'} );
     my $sock_obj = new IO::Socket;
     socket $sock_obj, PF_INET, SOCK_DGRAM, $proto or return undef;
     bind $sock_obj, $local_in or return undef;
+    return $sock_obj;
+}
+
+sub udp_send {
+    my ( $query, $options_href ) = @_;
+    my $sock_obj = udp_socket($options_href) or return undef;
+    my $peer_in = sockaddr_in( 53, $options_href->{'resolver-ipaddr'} );
     send $sock_obj, $query, 0, $peer_in or return undef;
+    return $sock_obj;
+}
+
+sub tcp_socket {
+    my ($options_href) = @_;
+    my $proto = getprotobyname('tcp') or return undef;
+    my $local_in = sockaddr_in( 0, $options_href->{'source-ipaddr'} );
+    my $sock_obj = new IO::Socket;
+    socket $sock_obj, PF_INET, SOCK_STREAM, $proto or return undef;
+    bind $sock_obj, $local_in or return undef;
     return $sock_obj;
 }
 
 sub tcp_send {
     my ( $query, $options_href ) = @_;
-    my $proto = getprotobyname('tcp') or return undef;
-    my $peer_in  = sockaddr_in( 53, $options_href->{'resolver-ipaddr'} );
-    my $local_in = sockaddr_in( 0,  $options_href->{'source-ipaddr'} );
-    my $sock_obj = new IO::Socket;
-    socket $sock_obj, PF_INET, SOCK_STREAM, $proto or return undef;
-    bind $sock_obj, $local_in or return undef;
+    my $sock_obj = tcp_socket($options_href);
+    if ( not defined $sock_obj ) {
+        return undef;
+    }
+    my $peer_in = sockaddr_in( 53, $options_href->{'resolver-ipaddr'} );
     connect $sock_obj, $peer_in or return undef;
     my $tcp_msg = pack q{n}, length $query;
     $tcp_msg .= $query;
@@ -425,6 +439,32 @@ sub tcp_sysread {
     return $buf;
 }
 
+sub tcp_sysread_timeout {
+    my ( $sock_obj, $expect_octets, $io_s, $time_left, $select ) = @_;
+    my $buf        = '';
+    my $bufidx     = 0;
+    my $time_taken = 0.0;
+    while ( $bufidx < $expect_octets ) {
+        my ( $ready_time, @ready ) =
+            timed_can_read( $io_s, $time_left, $select );
+        $time_taken += $ready_time;
+        $time_left -= $ready_time;
+        if ( $time_left <= 0 ) {
+            last;
+        }
+        if ( int @ready < 1 ) {
+            next;
+        }
+        my $retval = sysread $sock_obj, $buf, ( $expect_octets - $bufidx ),
+            $bufidx;
+        if ( not defined $retval ) {
+            last;
+        }
+        $bufidx += $retval;
+    }
+    return ( $buf, $time_taken );
+}
+
 sub unpack_header {
     my ($dns_packet) = @_;
 
@@ -448,27 +488,205 @@ sub unpack_header {
     return \%r_data;
 }
 
-sub time_hires_sendrecv {
+sub timed_can_write {
+    my ( $io_s, $timeout, $select_interval ) = @_;
+    my $time_taken = 0.0;
+    my @ready      = ();
+    while ( int @ready < 1 and $time_taken < $timeout ) {
+        @ready = $io_s->can_write($select_interval);
+        $time_taken += $select_interval;
+    }
+    return ( $time_taken, @ready );
+}
+
+sub timed_can_read {
+    my ( $io_s, $timeout, $select_interval ) = @_;
+    my $time_taken = 0.0;
+    my @ready      = ();
+    while ( int @ready < 1 and $time_taken < $timeout ) {
+        @ready = $io_s->can_read($select_interval);
+        $time_taken += $select_interval;
+    }
+    return ( $time_taken, @ready );
+}
+
+sub sendrecv_select {
+    my ( $query, $query_id, $options_href ) = @_;
+    my $peer_in = sockaddr_in( 53, $options_href->{'resolver-ipaddr'} );
+    my %perfdata = map { $_ => 0, } @PERFKEYS;
+    $perfdata{'timed_out'}     = 0;
+    $perfdata{'error_message'} = '';
+
+    my $time_taken = 0.0;
+    my $time_left  = $options_href->{'timeout'} / 1000.0;
+
+    if ( $options_href->{'protocol'} ne q{tcp} ) {
+
+        # protocol is udp or tcpfallback
+        my $sock_obj = udp_socket($options_href);
+        if ( not defined $sock_obj ) {
+            $perfdata{'error_message'} .= qq{udp_socket $ERRNO\n};
+            return ( $options_href->{'timeout'}, \%perfdata );
+        }
+        $sock_obj->blocking(0);
+        my $io_s = IO::Select->new();
+        $io_s->add($sock_obj);
+        my ( $ready_time, @ready ) =
+            timed_can_write( $io_s, $time_left, $options_href->{'select'} );
+
+        # Making the assumption that the UDP send will not take
+        # a significant amount of time, and in addition we can't
+        # really do non-blocking IO on udp packets anyway
+        $time_left -= $ready_time;
+        $time_taken += $ready_time;
+        if ( $time_left <= 0 ) {
+            $perfdata{'timed_out'} = 1;
+            return ( $options_href->{'timeout'}, \%perfdata );
+        }
+        if ( not send $sock_obj, $query, 0, $peer_in ) {
+            $perfdata{'error_message'} .= qq{udp_send $ERRNO\n};
+            return ( $options_href->{'timeout'}, \%perfdata );
+        }
+
+        $perfdata{'udp_queries'} += 1;
+        $perfdata{'udp_sent'} += length $query;
+        my $response = '';
+        ( $ready_time, @ready ) =
+            timed_can_read( $io_s, $time_left, $options_href->{'select'} );
+        $time_left -= $ready_time;
+        $time_taken += $ready_time;
+        if ( $time_left <= 0 ) {
+            $perfdata{'timed_out'} = 1;
+            return ( $options_href->{'timeout'}, \%perfdata );
+        }
+        if ( not defined recv $sock_obj, $response, 65535, 0 ) {
+            if ( not $perfdata{'timed_out'} ) {
+                $perfdata{'error_message'} .= qq{udp_recv $ERRNO\n};
+            }
+            return ( $options_href->{'timeout'}, \%perfdata );
+        }
+        close $sock_obj;
+
+        my $r_data_href = unpack_header($response);
+        if ( $r_data_href->{'id'} != $query_id ) {
+            $perfdata{'error_message'} .= qq{udp_recv bad response id\n};
+            return ( $options_href->{'timeout'}, \%perfdata );
+        }
+
+        $perfdata{'udp_responses'} += 1;
+        $perfdata{'udp_recv'} += length $response;
+
+        if (( $options_href->{'protocol'} eq 'udp' )
+            or (    ( $options_href->{'protocol'} eq 'tcpfallback' )
+                and ( not $r_data_href->{'tc'} ) )
+            )
+        {
+
+            # protocol udp only
+            # or tcpfallback and the packet is not truncated
+            # so our work is done
+            return ( $time_taken, \%perfdata );
+        }
+    }
+
+    # protocol is both, tcp or tcpfallback
+    #
+    my $sock_obj = tcp_socket($options_href);
+    if ( not defined $sock_obj ) {
+        $perfdata{'error_message'} .= qq{tcp_socket $ERRNO\n};
+        return ( $options_href->{'timeout'}, \%perfdata );
+    }
+    $sock_obj->blocking(0);
+    $ERRNO = 0;
+    connect $sock_obj, $peer_in;
+    if ( $ERRNO != POSIX::EINPROGRESS ) {
+
+        # Connect should return operation in progress
+        $perfdata{'error_message'} .= qq{tcp_connect $ERRNO\n};
+        return ( $options_href->{'timeout'}, \%perfdata );
+    }
+
+    my $io_s = IO::Select->new();
+    $io_s->add($sock_obj);
+
+    my $tcp_msg = pack q{n}, length $query;
+    $tcp_msg .= $query;
+    my $idx = 0;
+    my $len = length $tcp_msg;
+
+    while ( $idx < $len ) {
+        my ( $ready_time, @ready ) =
+            timed_can_write( $io_s, $time_left, $options_href->{'select'} );
+        $time_left -= $ready_time;
+        $time_taken += $ready_time;
+        if ( $time_left <= 0 ) {
+            $perfdata{'timed_out'} = 1;
+            return ( $options_href->{'timeout'}, \%perfdata );
+        }
+        my $result = send $sock_obj, $tcp_msg, 0, $peer_in;
+        if ( not defined $result ) {
+            $perfdata{'error_message'} .= qq{tcp_send $ERRNO\n};
+            return ( $options_href->{'timeout'}, \%perfdata );
+        }
+        $idx += $result;
+    }
+
+    $perfdata{'tcp_queries'} += 1;
+    $perfdata{'tcp_sent'} += length $query;
+    my ( $chunk, $c_read_time ) =
+        tcp_sysread_timeout( $sock_obj, 2, $io_s, $time_left,
+        $options_href->{'select'} );
+    $time_left -= $c_read_time;
+    $time_taken += $c_read_time;
+    if ( $time_left <= 0 ) {
+        $perfdata{'timed_out'} = 1;
+        return ( $options_href->{'timeout'}, \%perfdata );
+    }
+    my $resp_length = unpack q{n}, $chunk;
+    my ( $response, $r_read_time ) =
+        tcp_sysread_timeout( $sock_obj, $resp_length, $io_s, $time_left,
+        $options_href->{'select'} );
+    $time_left -= $r_read_time;
+    $time_taken += $r_read_time;
+    if ( $time_left <= 0 ) {
+        $perfdata{'timed_out'} = 1;
+        return ( $options_href->{'timeout'}, \%perfdata );
+    }
+    my $r_data_href = unpack_header($response);
+    if ( $r_data_href->{'id'} != $query_id ) {
+        $perfdata{'error_message'} .= qq{tcp_sysread bad response id\n};
+        return ( $options_href->{'timeout'}, \%perfdata );
+    }
+    $perfdata{'tcp_responses'} += 1;
+    $perfdata{'tcp_recv'} += length $response;
+    close $sock_obj;
+    return ( 1000 * $time_taken, \%perfdata );
+}
+
+sub sendrecv_time_hires {
     my ( $query, $query_id, $options_href ) = @_;
     my %perfdata = map { $_ => 0, } @PERFKEYS;
     $perfdata{'timed_out'}     = 0;
     $perfdata{'error_message'} = '';
 
-    my $start_time = Time::HiRes::time();
     $SIG{'ALRM'} = sub {
         $perfdata{'timed_out'} = 1;
     };
     Time::HiRes::alarm( $options_href->{'timeout'} / 1000.0 );
+    my $start_time = Time::HiRes::time();
 
-    time_hires_sendrecv_( \%perfdata, $query, $query_id, $options_href );
+    sendrecv_alarmed_( \%perfdata, $query, $query_id, $options_href );
+    if ( length $perfdata{'error_message'} ) {
+        return ( $options_href->{'timeout'}, \%perfdata );
+    }
 
     my $end_time   = Time::HiRes::time();
-    my $time_taken = ( $end_time - $start_time ) * 1000;
+    my $time_taken = ( $end_time - $start_time );
 
-    return ( $time_taken, \%perfdata );
+    return ( 1000 * $time_taken, \%perfdata );
 }
 
-sub time_hires_sendrecv_ {
+sub sendrecv_alarmed_ {
     my ( $perfdata_href, $query, $query_id, $options_href ) = @_;
 
     if ( $options_href->{'protocol'} ne q{tcp} ) {
@@ -476,7 +694,7 @@ sub time_hires_sendrecv_ {
         # protocol is udp or tcpfallback
         my $sock_obj = udp_send( $query, $options_href );
         if ( not defined $sock_obj ) {
-            $perfdata_href->{'error_message'} .= qq{udp_send $!\n};
+            $perfdata_href->{'error_message'} .= qq{udp_send $ERRNO\n};
             return;
         }
         $perfdata_href->{'udp_queries'} += 1;
@@ -484,7 +702,7 @@ sub time_hires_sendrecv_ {
         my $response = '';
         if ( not defined recv $sock_obj, $response, 65535, 0 ) {
             if ( not $perfdata_href->{'timed_out'} ) {
-                $perfdata_href->{'error_message'} .= qq{udp_recv $!\n};
+                $perfdata_href->{'error_message'} .= qq{udp_recv $ERRNO\n};
             }
             return;
         }
@@ -500,8 +718,10 @@ sub time_hires_sendrecv_ {
         $perfdata_href->{'udp_responses'} += 1;
         $perfdata_href->{'udp_recv'} += length $response;
 
-        if (   ( $options_href->{'protocol'} eq 'udp' )
-            or ( not $r_data_href->{'tc'} ) )
+        if (( $options_href->{'protocol'} eq 'udp' )
+            or (    ( $options_href->{'protocol'} eq 'tcpfallback' )
+                and ( not $r_data_href->{'tc'} ) )
+            )
         {
 
             # protocol udp only
@@ -511,9 +731,13 @@ sub time_hires_sendrecv_ {
         }
     }
 
-    # protocol is tcp or tcpfallback
+    # protocol is both, tcp or tcpfallback
     #
     my $sock_obj = tcp_send( $query, $options_href );
+    if ( not defined $sock_obj ) {
+        $perfdata_href->{'error_message'} .= qq{tcp_send $!\n};
+        return;
+    }
 
     $perfdata_href->{'tcp_queries'} += 1;
     $perfdata_href->{'tcp_sent'} += length $query;
