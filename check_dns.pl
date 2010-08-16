@@ -28,8 +28,8 @@ my $LICENSE =
 # Force all stderr to stdout
 *STDERR = *STDOUT;
 
-use strict;
-use warnings;
+#use strict;
+#use warnings;
 use Carp ();
 use English;
 use Getopt::Long;
