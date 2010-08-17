@@ -346,7 +346,7 @@ else {
 
 print qq{DNS $PERFDATA{'error_message'};};
 printf q{ AVG %.3f msec}, $average_msec;
-if ($have_time_hires) {
+if ($OPTIONS{'timehires'}) {
     print qq{;};
 }
 else {
@@ -468,7 +468,7 @@ sub unpack_header {
     my ($dns_packet) = @_;
 
     #print map {' ' . unpack 'b8', $_} split '', $dns_packet;
-    my @r_keys = qw(id bitfield qdcount adcount nscount arcount);
+    my @r_keys = qw(id bitfield qdcount ancount nscount arcount);
     my @r_values = unpack q{nB16nnnn}, $dns_packet;
     if ( int @r_values != int @r_keys ) {
         return undef;
@@ -572,6 +572,14 @@ sub sendrecv_select {
             return ( $options_href->{'timeout'}, \%perfdata );
         }
 
+        if ( ( not $r_data_href->{'tc'} )  and
+            ( $r_data_href->{'ancount'} < 1 ) ) {
+            # Not truncated, and we got no answers
+            # so return as failure
+            $perfdata{'error_message'} .= qq{udp_recv no answers\n};
+            return ( $options_href->{'timeout'}, \%perfdata );
+        }
+
         $perfdata{'udp_responses'} += 1;
         $perfdata{'udp_recv'} += length $response;
 
@@ -656,6 +664,10 @@ sub sendrecv_select {
         $perfdata{'error_message'} .= qq{tcp_sysread bad response id\n};
         return ( $options_href->{'timeout'}, \%perfdata );
     }
+    if ( $r_data_href->{'ancount'} < 1 ) {
+        $perfdata{'error_message'} .= qq{tcp_sysread no answers\n};
+        return ( $options_href->{'timeout'}, \%perfdata );
+    }
     $perfdata{'tcp_responses'} += 1;
     $perfdata{'tcp_recv'} += length $response;
     close $sock_obj;
@@ -714,6 +726,14 @@ sub sendrecv_alarmed_ {
             return;
         }
 
+        if ( ( not $r_data_href->{'tc'} )  and
+            ( $r_data_href->{'ancount'} < 1 ) ) {
+            # Not truncated, and we got no answers
+            # so return as failure
+            $perfdata{'error_message'} .= qq{udp_recv no answers\n};
+            return;
+        }
+
         $perfdata_href->{'udp_responses'} += 1;
         $perfdata_href->{'udp_recv'} += length $response;
 
@@ -754,6 +774,10 @@ sub sendrecv_alarmed_ {
         $perfdata_href->{'error_message'}
             .= qq{tcp_sysread bad response id\n};
         return;
+    }
+    if ( $r_data_href->{'ancount'} < 1 ) {
+        $perfdata{'error_message'} .= qq{tcp_sysread no answers\n};
+        return ( $options_href->{'timeout'}, \%perfdata );
     }
     $perfdata_href->{'tcp_responses'} += 1;
     $perfdata_href->{'tcp_recv'} += length $response;
